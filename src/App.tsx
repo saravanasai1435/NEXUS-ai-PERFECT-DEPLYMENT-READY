@@ -1,0 +1,1923 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Plus, 
+  MessageSquare, 
+  ChevronLeft, 
+  ChevronRight,
+  Search,
+  Zap,
+  Shield,
+  Send,
+  Sparkles,
+  Command,
+  FileText,
+  Lightbulb,
+  LogOut,
+  User as UserIcon,
+  Clock,
+  Trash2,
+  Menu,
+  X,
+  Presentation,
+  Code,
+  Settings,
+  Paperclip,
+  File,
+  Image as ImageIcon,
+  Film,
+  Check,
+  Layers,
+  Cpu,
+  History,
+  User,
+  Mail,
+  Globe,
+  Palette,
+  Activity,
+  Lock,
+  Monitor,
+  Smartphone,
+  Volume2,
+  Mic,
+  Key,
+  Eye,
+  EyeOff,
+  Gauge,
+  Info,
+  Sliders,
+  Github,
+  AlertCircle,
+  RefreshCw,
+  ExternalLink,
+  HelpCircle
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { useAI, Message, MODELS, NexusSettings } from './lib/ai';
+import { auth, signInWithGoogle, signInWithGithub } from './lib/firebase';
+import { onAuthStateChanged, User as FirebaseUser, signOut } from 'firebase/auth';
+import { saveChat, getChats, deleteChat } from './lib/db';
+import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeHighlight from 'rehype-highlight';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
+import 'highlight.js/styles/github.css';
+
+const cn = (...classes: any[]) => classes.filter(Boolean).join(' ');
+
+export interface CustomModelConfig {
+  id: string;
+  name: string;
+  provider: 'nvidia' | 'openrouter' | 'openai' | 'groq' | 'together' | 'deepseek' | 'anthropic' | 'custom';
+  apiKey: string;
+  baseUrl: string;
+  modelId: string;
+  assignedTypes: string[];
+  description?: string;
+  createdAt: number;
+}
+
+export default function App() {
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  
+  // App States
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [history, setHistory] = useState<Message[]>([]);
+  const [userInput, setUserInput] = useState("");
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [savedChats, setSavedChats] = useState<any[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState(MODELS[0].id);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activeSettingsTab, setActiveSettingsTab] = useState('general');
+  const [attachments, setAttachments] = useState<any[]>([]);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  // Custom client-side purpose-to-model configuration
+  const [purposeMapping, setPurposeMapping] = useState<Record<string, string>>(() => {
+    const stored = localStorage.getItem('nexus_custom_purpose_mapping');
+    if (stored) {
+      try { return JSON.parse(stored); } catch (e) {}
+    }
+    return {
+      'Coding': 'qwen-3-coder-free-code',
+      'Reasoning / Math': 'deepseek-r1-free-reasoning',
+      'General Chat': 'gemma-3-27b-it-free-general',
+      'File Analysis': 'qwen3-next-thinking-free-file',
+      'Image Analysis': 'qwen-vl-free-image',
+      'Video Analysis': 'nemotron-3-nano-omni-free-video',
+      'Agents / Workflows': 'deepseek-v3-free-agent'
+    };
+  });
+
+  const [customOpenRouterKey, setCustomOpenRouterKey] = useState(() => localStorage.getItem('nexus_custom_openrouter_key') || '');
+  const [customNvidiaKey, setCustomNvidiaKey] = useState(() => localStorage.getItem('nexus_custom_nvidia_key') || '');
+
+  // Custom Models management state
+  const [customModels, setCustomModels] = useState<CustomModelConfig[]>(() => {
+    try {
+      const stored = localStorage.getItem('nexus_custom_models');
+      if (stored) return JSON.parse(stored);
+    } catch (e) {
+      console.warn("Failed loading custom models", e);
+    }
+    return [
+      {
+        id: 'custom-nv-nemotron-super',
+        name: 'NVIDIA Nemotron Super 120B',
+        provider: 'nvidia',
+        apiKey: '',
+        baseUrl: 'https://integrate.api.nvidia.com/v1',
+        modelId: 'nvidia/nemotron-3-super-120b-a12b',
+        assignedTypes: ['General Chat', 'Coding'],
+        description: 'NVIDIA GPU Accelerated LLM via NIM API',
+        createdAt: Date.now()
+      }
+    ];
+  });
+
+  // OpenRouter Dynamic Models Generator State
+  const [openRouterFetchedModels, setOpenRouterFetchedModels] = useState<{ id: string; name: string; context_length?: number }[]>([]);
+  const [fetchingOpenRouterModels, setFetchingOpenRouterModels] = useState(false);
+  const [openRouterFetchMsg, setOpenRouterFetchMsg] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [openRouterFilterQuery, setOpenRouterFilterQuery] = useState('');
+
+  // New Custom Model Form State
+  const [newModelProvider, setNewModelProvider] = useState<'nvidia' | 'openrouter' | 'openai' | 'groq' | 'together' | 'deepseek' | 'anthropic' | 'custom'>('nvidia');
+  const [newModelApiKey, setNewModelApiKey] = useState('');
+  const [newModelBaseUrl, setNewModelBaseUrl] = useState('https://integrate.api.nvidia.com/v1');
+  const [newModelId, setNewModelId] = useState('');
+  const [newModelName, setNewModelName] = useState('');
+  const [newModelAssignedTypes, setNewModelAssignedTypes] = useState<string[]>(['General Chat']);
+  const [testConnectionStatus, setTestConnectionStatus] = useState<Record<string, { testing: boolean; result?: string; error?: boolean }>>({});
+
+  // Synchronize router settings & custom models to cache
+  useEffect(() => {
+    localStorage.setItem('nexus_custom_purpose_mapping', JSON.stringify(purposeMapping));
+  }, [purposeMapping]);
+
+  useEffect(() => {
+    localStorage.setItem('nexus_custom_openrouter_key', customOpenRouterKey);
+  }, [customOpenRouterKey]);
+
+  useEffect(() => {
+    localStorage.setItem('nexus_custom_nvidia_key', customNvidiaKey);
+  }, [customNvidiaKey]);
+
+  useEffect(() => {
+    localStorage.setItem('nexus_custom_models', JSON.stringify(customModels));
+  }, [customModels]);
+
+  // Combine built-in MODELS with custom user models
+  const allAvailableModels = [
+    ...customModels.map(cm => ({
+      id: cm.id,
+      name: `${cm.name} [${cm.provider.toUpperCase()}]`,
+      provider: cm.provider,
+      type: 'chat' as const,
+      description: cm.description || `Custom model via ${cm.provider}`,
+      category: 'Custom',
+      apiModel: cm.modelId,
+      costType: 'custom' as const
+    })),
+    ...MODELS
+  ];
+
+  // Dynamic OpenRouter Models Fetch Handler
+  const handleFetchOpenRouterModels = async (overrideKey?: string) => {
+    const keyToUse = overrideKey || customOpenRouterKey || newModelApiKey;
+    if (!keyToUse || !keyToUse.trim()) {
+      setOpenRouterFetchMsg({
+        text: 'No OpenRouter API Key detected. Please paste your OpenRouter key (sk-or-v1-...) below or in "API Keys & Routing" to generate the available models list!',
+        type: 'error'
+      });
+      return;
+    }
+
+    setFetchingOpenRouterModels(true);
+    setOpenRouterFetchMsg({ text: 'Connecting to OpenRouter API to fetch available models...', type: 'info' });
+
+    try {
+      const res = await fetch('https://openrouter.ai/api/v1/models', {
+        headers: {
+          'Authorization': `Bearer ${keyToUse.trim()}`,
+          'HTTP-Referer': 'https://nexus-ai.studio',
+          'X-Title': 'Nexus AI Studio'
+        }
+      });
+
+      if (!res.ok) {
+        throw new Error(`OpenRouter returned HTTP status ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (data && Array.isArray(data.data)) {
+        const formatted = data.data.map((m: any) => ({
+          id: m.id,
+          name: m.name || m.id,
+          context_length: m.context_length
+        }));
+        setOpenRouterFetchedModels(formatted);
+        setOpenRouterFetchMsg({
+          text: `Successfully generated ${formatted.length} models from your OpenRouter key!`,
+          type: 'success'
+        });
+      } else {
+        throw new Error('Invalid payload from OpenRouter models endpoint');
+      }
+    } catch (err: any) {
+      console.warn("OpenRouter live models fetch notice, presenting standard catalog", err);
+      const fallbackList = [
+        { id: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Llama 3.3 70B Instruct (Free)' },
+        { id: 'nvidia/nemotron-3-super-120b-a12b:free', name: 'NVIDIA Nemotron 3 Super 120B (Free)' },
+        { id: 'deepseek/deepseek-r1:free', name: 'DeepSeek R1 Reasoning (Free)' },
+        { id: 'deepseek/deepseek-v3:free', name: 'DeepSeek V3 (Free)' },
+        { id: 'qwen/qwen3-coder:free', name: 'Qwen 3 Coder 32B (Free)' },
+        { id: 'qwen/qwen2.5-vl-72b-instruct:free', name: 'Qwen 2.5 Vision 72B (Free)' },
+        { id: 'openai/gpt-4o', name: 'OpenAI GPT-4o' },
+        { id: 'openai/gpt-4o-mini', name: 'OpenAI GPT-4o Mini' },
+        { id: 'anthropic/claude-3.5-sonnet', name: 'Anthropic Claude 3.5 Sonnet' },
+        { id: 'google/gemini-2.5-pro-preview', name: 'Google Gemini 2.5 Pro' },
+        { id: 'groq/llama-3.3-70b-versatile', name: 'Groq Llama 3.3 70B' }
+      ];
+      setOpenRouterFetchedModels(fallbackList);
+      setOpenRouterFetchMsg({
+        text: `Loaded ${fallbackList.length} popular models catalog (${err.message || 'ready for selection'}).`,
+        type: 'info'
+      });
+    } finally {
+      setFetchingOpenRouterModels(false);
+    }
+  };
+
+  // Test Custom Model Endpoint Connection
+  const testCustomModelConnection = async (modelConfig: CustomModelConfig) => {
+    setTestConnectionStatus(prev => ({ ...prev, [modelConfig.id]: { testing: true } }));
+    try {
+      const endpoint = `${modelConfig.baseUrl.replace(/\/$/, '')}/chat/completions`;
+      const keyToUse = modelConfig.apiKey || (modelConfig.provider === 'nvidia' ? customNvidiaKey : customOpenRouterKey);
+
+      if (!keyToUse) {
+        throw new Error("No API key provided for this model endpoint.");
+      }
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${keyToUse}`,
+          'HTTP-Referer': 'https://nexus-ai.studio'
+        },
+        body: JSON.stringify({
+          model: modelConfig.modelId,
+          messages: [{ role: 'user', content: 'Ping' }],
+          max_tokens: 5
+        })
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson?.error?.message || errJson?.error || `HTTP ${res.status}`);
+      }
+
+      setTestConnectionStatus(prev => ({
+        ...prev,
+        [modelConfig.id]: { testing: false, result: 'Connected successfully! Endpoint & Key active.', error: false }
+      }));
+    } catch (err: any) {
+      setTestConnectionStatus(prev => ({
+        ...prev,
+        [modelConfig.id]: { testing: false, result: `Connection failed: ${err.message}`, error: true }
+      }));
+    }
+  };
+
+  // Save Custom Model Handler
+  const handleSaveCustomModel = () => {
+    if (!newModelId.trim()) {
+      alert("Please select or type a Model ID.");
+      return;
+    }
+    const finalName = newModelName.trim() || `${newModelProvider.toUpperCase()} - ${newModelId.split('/').pop() || newModelId}`;
+
+    const newEntry: CustomModelConfig = {
+      id: `custom-model-${Date.now()}`,
+      name: finalName,
+      provider: newModelProvider,
+      apiKey: newModelApiKey.trim(),
+      baseUrl: newModelBaseUrl.trim() || 'https://integrate.api.nvidia.com/v1',
+      modelId: newModelId.trim(),
+      assignedTypes: newModelAssignedTypes,
+      description: `Custom ${newModelProvider.toUpperCase()} model integration`,
+      createdAt: Date.now()
+    };
+
+    setCustomModels(prev => [newEntry, ...prev]);
+
+    // Update purposeMapping for assigned prompt categories
+    setPurposeMapping(prev => {
+      const updated = { ...prev };
+      newModelAssignedTypes.forEach(t => {
+        updated[t] = newEntry.id;
+      });
+      return updated;
+    });
+
+    setNewModelId('');
+    setNewModelName('');
+    alert(`Custom model "${finalName}" registered and mapped successfully!`);
+  };
+
+  const [nexusSettings, setNexusSettings] = useState<NexusSettings>({
+    personality: 'assistant',
+    style: 'balanced',
+    length: 'medium',
+    dynamicRouting: true,
+    modelMode: 'turbo'
+  });
+  
+  const { request, loading, error } = useAI();
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-scroll to bottom
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [history, loading]);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setAuthLoading(false);
+      if (u) loadUserLibrary();
+    });
+    return unsubscribe;
+  }, []);
+
+  const loadUserLibrary = async () => {
+    try {
+      const chats = await getChats();
+      setSavedChats(chats);
+    } catch (e) {
+      console.error("Library load error:", e);
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    Array.from(files).forEach(file => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        let type: 'image' | 'video' | 'audio' | 'file' = 'file';
+        if (file.type.startsWith('image/')) type = 'image';
+        else if (file.type.startsWith('video/')) type = 'video';
+        else if (file.type.startsWith('audio/')) type = 'audio';
+        
+        setAttachments(prev => [...prev, {
+          type,
+          url: ev.target?.result as string,
+          name: file.name,
+          mimeType: file.type
+        }]);
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleSendMessage = async () => {
+    if (!userInput.trim() && attachments.length === 0) return;
+
+    const currentInput = userInput;
+    const currentAttachments = [...attachments];
+    setUserInput("");
+    setAttachments([]);
+
+    const newUserMsg: Message = { 
+      role: 'user', 
+      content: currentInput || (currentAttachments.length > 0 ? "Analyze attached media" : ""),
+      attachments: currentAttachments 
+    };
+    
+    const updatedHistory = [...history, newUserMsg];
+    setHistory(updatedHistory);
+
+    // Initial placeholder for assistant response
+    const assistantPlaceholder: Message = { role: 'assistant', content: "", model: 'Nexus Auto' };
+    setHistory(prev => [...prev, assistantPlaceholder]);
+
+    const resp = await request(updatedHistory, nexusSettings, (content) => {
+      setHistory(prev => {
+        const newHistory = [...prev];
+        const lastMsg = newHistory[newHistory.length - 1];
+        if (lastMsg && lastMsg.role === 'assistant') {
+          lastMsg.content = content;
+        }
+        return newHistory;
+      });
+    }, selectedModelId === 'nvidia-nemotron-3-super-free' ? undefined : selectedModelId);
+
+    if (resp && user) {
+      const finalHistory = [...updatedHistory, { role: 'assistant', content: resp.content, model: resp.model }];
+      const title = history.length === 0 ? (currentInput || "Media Session").substring(0, 30) : undefined;
+      const id = await saveChat(currentChatId, finalHistory, title);
+      if (id) setCurrentChatId(id);
+      loadUserLibrary();
+    }
+  };
+
+  const removeAttachment = (index: number) => {
+    setAttachments(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleDeleteChat = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    await deleteChat(id);
+    if (currentChatId === id) {
+      setHistory([]);
+      setCurrentChatId(null);
+    }
+    loadUserLibrary();
+  };
+
+  const startNewChat = () => {
+    setHistory([]);
+    setCurrentChatId(null);
+    setAttachments([]);
+  };
+
+  if (authLoading) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-white">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-10 h-10 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest italic">Nexus Link Establishing...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="h-screen w-full bg-slate-50 flex flex-col items-center justify-center p-8">
+        <div className="absolute inset-0 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:20px_20px] [mask-image:radial-gradient(ellipse_50%_50%_at_50%_50%,#000_70%,transparent_100%)]" />
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="w-full max-w-sm text-center relative z-10"
+        >
+          <div className="w-20 h-20 bg-indigo-600 rounded-[2rem] shadow-2xl shadow-indigo-200 flex items-center justify-center mb-8 mx-auto rotate-12">
+            <Sparkles className="w-10 h-10 text-white -rotate-12" />
+          </div>
+          <h1 className="text-5xl font-black text-slate-900 mb-2 font-display tracking-tight">Nexus</h1>
+          <p className="text-slate-500 font-medium mb-10 leading-relaxed max-w-[280px] mx-auto">
+            Experience the next generation of unified intelligence.
+          </p>
+          <div className="flex flex-col gap-3">
+            <button 
+              onClick={async () => {
+                setAuthError(null);
+                try {
+                  await signInWithGoogle();
+                } catch (err: any) {
+                  if (err.code === 'auth/account-exists-with-different-credential') {
+                    setAuthError("An account already exists with this email. Please use the provider you originally signed up with.");
+                  } else if (err.code !== 'auth/cancelled-popup-request' && err.code !== 'auth/popup-closed-by-user') {
+                    setAuthError("Failed to authenticate with Google. Please try again.");
+                  }
+                }
+              }}
+              className="w-full bg-white text-slate-900 border border-slate-200 rounded-2xl py-4 flex items-center justify-center gap-4 font-bold hover:bg-slate-50 transition-all shadow-sm active:scale-95"
+            >
+              <img src="https://www.google.com/favicon.ico" className="w-5 h-5 grayscale opacity-50 group-hover:opacity-100" alt="Google" />
+              Sign in with Google
+            </button>
+            <button 
+              onClick={async () => {
+                setAuthError(null);
+                try {
+                  await signInWithGithub();
+                } catch (err: any) {
+                  if (err.code === 'auth/account-exists-with-different-credential') {
+                    setAuthError("An account already exists with this email. Please use the provider you originally signed up with (likely Google).");
+                  } else if (err.code !== 'auth/cancelled-popup-request' && err.code !== 'auth/popup-closed-by-user') {
+                    setAuthError("Failed to authenticate with GitHub. Please try again.");
+                  }
+                }
+              }}
+              className="w-full bg-slate-900 text-white rounded-2xl py-4 flex items-center justify-center gap-4 font-bold hover:bg-slate-800 transition-all shadow-xl active:scale-95"
+            >
+              <Github className="w-5 h-5" />
+              Sign in with GitHub
+            </button>
+          </div>
+
+          <AnimatePresence>
+            {authError && (
+              <motion.div 
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="mt-6 p-4 bg-red-50 border border-red-100 rounded-2xl text-[11px] font-bold text-red-600 leading-relaxed"
+              >
+                {authError}
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <p className="mt-8 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Enterprise Neural Interface</p>
+        </motion.div>
+      </div>
+    );
+  }
+
+  const selectedModel = MODELS.find(m => m.id === selectedModelId) || MODELS[0];
+
+  return (
+    <div className="flex h-screen w-full bg-white text-slate-900 font-sans overflow-hidden">
+      {/* Navigation Sidebar */}
+      <motion.aside 
+        initial={false}
+        animate={{ width: sidebarOpen ? 280 : 0, opacity: sidebarOpen ? 1 : 0 }}
+        className="h-full bg-slate-50 border-r border-slate-200 flex flex-col overflow-hidden whitespace-nowrap z-20"
+      >
+        <div className="p-5 flex items-center justify-between">
+          <div className="flex items-center gap-3 px-2 mb-4">
+             <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white">
+                <Sparkles className="w-5 h-5 shadow-sm" />
+             </div>
+             <span className="font-black text-xl tracking-tighter">Nexus</span>
+          </div>
+        </div>
+
+        <div className="px-5 mb-6 flex flex-col gap-2">
+          <button onClick={startNewChat} className="w-full flex items-center gap-3 px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-bold shadow-sm hover:shadow-md transition-all active:scale-95">
+            <Plus className="w-4 h-4 text-indigo-600" />
+            New Chat
+          </button>
+
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-3 space-y-6 custom-scrollbar">
+          <div className="pt-2">
+            <h4 className="px-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 font-mono">History</h4>
+            <div className="space-y-0.5">
+              {savedChats.length === 0 ? (
+                <div className="px-3 py-4 text-xs font-semibold text-slate-400 italic">No previous streams</div>
+              ) : (
+                savedChats.map(c => (
+                  <div key={c.id} className="group relative px-1">
+                    <button 
+                      onClick={() => { setHistory(c.messages); setCurrentChatId(c.id); }}
+                      className={cn(
+                        "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold text-left truncate transition-all",
+                        currentChatId === c.id ? "bg-white text-indigo-600 shadow-sm ring-1 ring-slate-100" : "text-slate-500 hover:bg-slate-200/50"
+                      )}
+                    >
+                      <Clock className="w-3.5 h-3.5 shrink-0 opacity-40" />
+                      <span className="truncate">{c.title || "Untitled Stream"}</span>
+                    </button>
+                    <button onClick={(e) => handleDeleteChat(c.id, e)} className="absolute right-3 top-2.5 p-1 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-slate-200 bg-slate-50/50">
+           <div className="flex items-center gap-3 px-3 py-2 mb-2">
+              <img src={user.photoURL || `https://ui-avatars.com/api/?name=${user.email}`} className="w-8 h-8 rounded-lg" alt="P" />
+              <div className="flex-1 overflow-hidden">
+                <p className="text-xs font-bold text-slate-900 truncate">{user.displayName || user.email}</p>
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Neural Link Active</span>
+                </div>
+              </div>
+           </div>
+            <button 
+              onClick={() => { setActiveSettingsTab('github'); setSettingsOpen(true); }}
+              className="w-full flex items-center justify-center gap-2 py-2 mb-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-[10px] font-bold transition-all shadow-sm"
+            >
+              <Github className="w-3.5 h-3.5" />
+              GitHub Pages Guide
+            </button>
+           <div className="flex gap-1">
+              <button onClick={() => setSettingsOpen(true)} className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-white border border-slate-200 text-slate-600 rounded-xl text-[10px] font-bold hover:bg-slate-100 transition-all">
+                <Settings className="w-3.5 h-3.5" />
+                Settings
+              </button>
+              <button onClick={() => signOut(auth)} className="aspect-square flex items-center justify-center bg-white border border-slate-200 text-slate-400 hover:text-red-500 rounded-xl transition-all">
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+           </div>
+        </div>
+      </motion.aside>
+
+      {/* Main Experience */}
+      <main className="flex-1 flex flex-col h-full bg-white relative">
+        <header className="h-14 flex items-center px-6 border-b border-slate-100 justify-between bg-white/80 backdrop-blur-md z-10">
+           <div className="flex items-center gap-4">
+              <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 -ml-2 text-slate-400 hover:text-slate-900 transition-colors">
+                  {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+              </button>
+              
+              <div className="h-6 w-px bg-slate-200" />
+              
+              {/* Model Selector Dropdown */}
+              <div className="relative group">
+                <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-all border border-transparent hover:border-slate-200">
+                   <Zap className={cn("w-3.5 h-3.5", selectedModelId === 'nvidia-nemotron-3-super-free' ? "text-indigo-500 fill-indigo-500" : "text-slate-400")} />
+                   <span className="text-xs font-bold text-slate-700">{selectedModel?.name}</span>
+                   <ChevronRight className="w-3 h-3 text-slate-400 rotate-90" />
+                </button>
+                <div className="absolute top-full left-0 mt-2 w-80 bg-white border border-slate-200 rounded-2xl shadow-2xl p-2 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 max-h-[480px] overflow-y-auto custom-scrollbar">
+                  {Object.entries(
+                    MODELS.reduce<Record<string, typeof MODELS>>((acc, m) => {
+                      const cat = m.category || 'General';
+                      if (!acc[cat]) acc[cat] = [];
+                      acc[cat].push(m);
+                      return acc;
+                    }, {})
+                  ).map(([category, models]) => (
+                    <div key={category} className="mb-3 last:mb-0">
+                      <div className="flex items-center gap-1.5 px-3 py-1.5 text-[8px] font-black tracking-wider text-slate-400 uppercase select-none border-b border-slate-55 mb-1.5">
+                        {category === 'Adaptive' && '⚡ Adaptive Neural Routing'}
+                        {category === 'Coding' && '💻 Coding Models'}
+                        {category === 'Reasoning / Math' && '🧠 Reasoning & Math'}
+                        {category === 'General Chat' && '💬 General Chat'}
+                        {category === 'File Analysis' && '📄 File Analysis'}
+                        {category === 'Image Analysis' && '🖼️ Image Analysis'}
+                        {category === 'Video Analysis' && '🎥 Video Analysis'}
+                        {category === 'Agents / Workflows' && '🤖 Agents & Workflows'}
+                        {category === 'Top 10 Free Models' && '⭐ Top 10 Free OpenRouter Models'}
+                      </div>
+                      <div className="space-y-0.5">
+                        {models.map(m => (
+                          <button 
+                            key={m.id}
+                            onClick={() => setSelectedModelId(m.id)}
+                            className={cn(
+                              "w-full flex flex-col p-2.5 rounded-xl text-left transition-all",
+                              selectedModelId === m.id ? "bg-indigo-50 border border-indigo-100/50" : "hover:bg-slate-50 border border-transparent"
+                            )}
+                          >
+                            <div className="flex items-center justify-between gap-2 w-full mb-0.5">
+                              <span className="text-xs font-bold text-slate-900">{m.name}</span>
+                              {selectedModelId === m.id ? (
+                                <Check className="w-3 h-3 text-indigo-600 shrink-0" />
+                              ) : (
+                                <span className="text-[8px] font-bold text-slate-400 uppercase tracking-widest shrink-0">{m.provider}</span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-slate-500 font-medium leading-tight">{m.description}</p>
+                            {m.why && (
+                              <div className="text-[9px] font-semibold text-indigo-700 bg-indigo-500/5 border border-indigo-500/10 px-1.5 py-0.5 rounded-md flex items-center gap-1 mt-1 self-start leading-none select-none">
+                                <span className="text-[8px] uppercase tracking-wider text-indigo-400 font-extrabold header-why">Why:</span>
+                                <span>{m.why}</span>
+                              </div>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+           </div>
+
+           <div className="flex items-center gap-2">
+              <div className="flex -space-x-2">
+                  <div className="w-6 h-6 rounded-full bg-slate-100 border-2 border-white flex items-center justify-center text-[8px] font-bold">SM</div>
+                  <div className="w-6 h-6 rounded-full bg-indigo-100 border-2 border-white flex items-center justify-center text-[8px] font-bold text-indigo-600">NX</div>
+              </div>
+           </div>
+        </header>
+
+        <div className="flex-1 overflow-hidden flex flex-col">
+          <AnimatePresence mode="wait">
+            <motion.div key="chat" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col overflow-hidden">
+                <div className="flex-1 overflow-y-auto custom-scrollbar pt-10">
+                   {history.length === 0 ? (
+                     <div className="h-full flex flex-col items-center justify-center p-8 text-center max-w-xl mx-auto">
+                        <div className="w-20 h-20 bg-indigo-50 border border-indigo-100 rounded-[32px] flex items-center justify-center text-indigo-600 mb-8 shadow-inner animate-pulse">
+                           <Sparkles className="w-10 h-10" />
+                        </div>
+                        <h2 className="text-4xl font-black text-slate-800 mb-4 font-display tracking-tight">System Ready</h2>
+                        <p className="text-slate-400 font-semibold uppercase tracking-[0.2em] text-[10px] mb-12">Nexus Intelligence Cluster Integrated</p>
+                        <div className="grid grid-cols-2 gap-3 w-full">
+                           <SuggestionCard icon={<FileText className="w-4 h-4"/>} text="Synthesize a project brief" onClick={() => setUserInput("Synthesize a comprehensive project brief for a high-performance EV startup.")} />
+                           <SuggestionCard icon={<Presentation className="w-4 h-4"/>} text="Analyze market patterns" onClick={() => setUserInput("Analyze current market patterns for decentralized energy storage.")} />
+                           <SuggestionCard icon={<Code className="w-4 h-4"/>} text="Generate logic hooks" onClick={() => setUserInput("Generate custom React logic hooks for advanced state hydration.")} />
+                           <SuggestionCard icon={<Lightbulb className="w-4 h-4"/>} text="Creative Ideation" onClick={() => setUserInput("Surface 5 high-impact creative directions for a minimalist sustainable brand.")} />
+                        </div>
+                     </div>
+                   ) : (
+                     <div className="pb-40">
+                        {history.map((msg, i) => (
+                           <div key={i} className={cn("animate-msg", msg.role === 'assistant' ? "bubble-assistant" : "bubble-user")}>
+                              <div className={msg.role === 'assistant' ? "avatar-ai" : "avatar-user"}>
+                                 {msg.role === 'assistant' ? <Sparkles className="w-4 h-4 shadow-sm" /> : <UserIcon className="w-4 h-4" />}
+                              </div>
+                              <div className="flex-1 flex flex-col gap-2">
+                                <div className="text-[16px] leading-[1.7] text-slate-700 font-medium whitespace-pre-wrap pt-0.5">
+                                   {msg.role === 'assistant' ? (
+                                      <div className="prose prose-slate max-w-none prose-sm sm:prose-base dark:prose-invert">
+                                         <ReactMarkdown 
+                                            remarkPlugins={[remarkMath]} 
+                                            rehypePlugins={[rehypeHighlight, rehypeKatex]}
+                                         >
+                                            {msg.content}
+                                         </ReactMarkdown>
+                                      </div>
+                                   ) : (
+                                      <div>
+                                        <span>{msg.content}</span>
+                                        {msg.attachments && msg.attachments.length > 0 && (
+                                          <div className="flex flex-wrap gap-2 mt-4">
+                                            {msg.attachments.map((att, idx) => (
+                                              <div key={idx} className="relative group rounded-xl overflow-hidden border border-white/20 shadow-lg">
+                                                {att.type === 'image' ? (
+                                                  <img src={att.url} className="w-32 h-32 object-cover" alt="attachment" />
+                                                ) : att.type === 'video' ? (
+                                                  <div className="w-32 h-32 bg-slate-800 flex items-center justify-center relative">
+                                                    <Film className="w-8 h-8 text-white/20" />
+                                                    <span className="absolute bottom-2 right-2 text-[8px] font-bold text-white/50 uppercase tracking-widest">Video Link</span>
+                                                  </div>
+                                                ) : att.type === 'audio' ? (
+                                                  <div className="w-32 h-12 bg-slate-100 flex items-center gap-3 px-4 rounded-xl border border-slate-200">
+                                                    <Volume2 className="w-4 h-4 text-indigo-500" />
+                                                    <span className="text-[9px] font-bold text-slate-500 truncate">{att.name}</span>
+                                                  </div>
+                                                ) : (
+                                                  <div className="w-32 h-32 bg-slate-800 flex items-center justify-center p-4 text-[10px] text-white/50 break-all">{att.name}</div>
+                                                )}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                   )}
+                                </div>
+                                {msg.role === 'assistant' && msg.model && (
+                                  <div className="flex items-center gap-1.5 opacity-40">
+                                    <div className="w-1 h-1 rounded-full bg-slate-400" />
+                                    <span className="text-[9px] font-bold uppercase tracking-widest text-slate-500">
+                                      {MODELS.find(m => m.id === msg.model)?.name || msg.model}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                           </div>
+                        ))}
+                        {loading && (
+                          <div className="bubble-assistant">
+                             <div className="avatar-ai"><Sparkles className="w-4 h-4" /></div>
+                             <div className="flex gap-1.5 items-center h-8">
+                                <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce shadow-[0_0_8px_#818cf8]" />
+                                <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce [animation-delay:0.2s] shadow-[0_0_8px_#818cf8]" />
+                                <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce [animation-delay:0.4s] shadow-[0_0_8px_#818cf8]" />
+                             </div>
+                          </div>
+                        )}
+                        {error && (
+                          <div className="flex items-start gap-3 p-4 mx-6 my-2 bg-rose-500/10 border border-rose-500/20 text-rose-700 rounded-2xl text-xs font-semibold max-w-[85%] self-start">
+                            <AlertCircle className="w-4 h-4 shrink-0 text-rose-500 mt-0.5" />
+                            <div className="flex flex-col gap-1">
+                              <span className="font-black tracking-wider uppercase text-[10px] text-rose-600">Sync Error</span>
+                              <span className="font-semibold">{error === "TOO HIGH FOR YOUR PLAN" ? "TOO HIGH FOR YOUR PLAN" : error}</span>
+                            </div>
+                          </div>
+                        )}
+                        <div ref={messagesEndRef} />
+                     </div>
+                   )}
+                </div>
+
+                <div className="p-4 bg-gradient-to-t from-white via-white to-transparent sticky bottom-0">
+                   <div className="chat-input-wrapper overflow-visible">
+                      {attachments.length > 0 && (
+                        <div className="flex flex-wrap gap-2 mb-3 px-2">
+                           {attachments.map((file, i) => (
+                             <motion.div 
+                               initial={{ opacity: 0, scale: 0.9 }}
+                               animate={{ opacity: 1, scale: 1 }}
+                               key={i} 
+                               className="relative group w-14 h-14 rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden"
+                             >
+                               {file.type === 'image' ? (
+                                 <img src={file.url} className="w-full h-full object-cover" alt="p" />
+                               ) : file.type === 'video' ? (
+                                 <div className="w-full h-full flex items-center justify-center bg-slate-50">
+                                    <Film className="w-5 h-5 text-indigo-400" />
+                                 </div>
+                               ) : file.type === 'audio' ? (
+                                 <div className="w-full h-full flex items-center justify-center bg-slate-50">
+                                    <Volume2 className="w-5 h-5 text-indigo-400" />
+                                 </div>
+                               ) : (
+                                 <div className="w-full h-full flex items-center justify-center p-1">
+                                    <File className="w-5 h-5 text-slate-300" />
+                                 </div>
+                               )}
+                               <button onClick={() => removeAttachment(i)} className="absolute inset-0 bg-red-500/80 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                  <X className="w-4 h-4" />
+                               </button>
+                             </motion.div>
+                           ))}
+                        </div>
+                      )}
+                      
+                      <div className="relative group">
+                        <textarea 
+                          value={userInput}
+                          onChange={e => setUserInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault();
+                              handleSendMessage();
+                            }
+                          }}
+                          placeholder={`Message ${selectedModel?.name}...`}
+                          rows={1}
+                          className="chat-input !pl-14"
+                        />
+                        <button 
+                          onClick={() => fileInputRef.current?.click()}
+                          className="absolute left-3 bottom-2.5 p-2.5 text-slate-300 hover:text-indigo-600 hover:bg-indigo-50 rounded-2xl transition-all"
+                        >
+                          <Paperclip className="w-5 h-5" />
+                        </button>
+                        <input type="file" multiple ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
+                        <button 
+                          onClick={handleSendMessage}
+                          disabled={loading || (!userInput.trim() && attachments.length === 0)}
+                          className="absolute right-3 bottom-2.5 p-2.5 bg-indigo-600 text-white rounded-2xl hover:bg-indigo-700 transition-all shadow-lg active:scale-90 disabled:opacity-30 disabled:grayscale"
+                        >
+                          <Send className="w-5 h-5" />
+                        </button>
+                      </div>
+                      <p className="mt-4 text-[10px] text-center text-slate-400 font-bold uppercase tracking-widest italic flex items-center justify-center gap-2">
+                        <Shield className="w-3 h-3" />
+                         Encrypted Link • {selectedModel?.name} Active
+                      </p>
+                   </div>
+                </div>
+            </motion.div>
+          </AnimatePresence>
+        </div>
+      </main>
+
+      {/* Settings Modal */}
+      <AnimatePresence>
+        {settingsOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+             <motion.div 
+               initial={{ opacity: 0 }}
+               animate={{ opacity: 1 }}
+               exit={{ opacity: 0 }}
+               onClick={() => setSettingsOpen(false)}
+               className="fixed inset-0 bg-slate-900/60 backdrop-blur-xl"
+             />
+             <motion.div 
+               initial={{ opacity: 0, scale: 0.9, y: 30 }}
+               animate={{ opacity: 1, scale: 1, y: 0 }}
+               exit={{ opacity: 0, scale: 0.9, y: 30 }}
+               className="relative w-full max-w-5xl bg-white rounded-[40px] shadow-[0_32px_128px_-16px_rgba(0,0,0,0.3)] border border-white/20 overflow-hidden flex flex-col h-[85vh]"
+             >
+                <div className="flex h-full overflow-hidden">
+                   {/* Settings Sidebar */}
+                   <div className="w-64 bg-slate-50 border-r border-slate-100 p-8 flex flex-col gap-6 overflow-y-auto">
+                      <div className="mb-4">
+                         <h3 className="text-xl font-black text-slate-900 tracking-tight">Nexus Core</h3>
+                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">v3.12-ALPHA</p>
+                      </div>
+                      
+                      <div className="space-y-1">
+                         <p className="px-3 py-2 text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">Configuration</p>
+                         <SettingsTab active={activeSettingsTab === 'general'} onClick={() => setActiveSettingsTab('general')} icon={<UserIcon className="w-4 h-4"/>} label="General" />
+                         <SettingsTab active={activeSettingsTab === 'memory'} onClick={() => setActiveSettingsTab('memory')} icon={<History className="w-4 h-4"/>} label="Memory" />
+                      </div>
+
+                      <div className="space-y-1">
+                         <p className="px-3 py-2 text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">System Center</p>
+                         <SettingsTab active={activeSettingsTab === 'routing'} onClick={() => setActiveSettingsTab('routing')} icon={<Key className="w-4 h-4"/>} label="API Keys & Routing" />
+                         <SettingsTab active={activeSettingsTab === 'custom_models'} onClick={() => setActiveSettingsTab('custom_models')} icon={<Cpu className="w-4 h-4"/>} label="Custom Models" />
+                         
+                      </div>
+
+                       <div className="space-y-1">
+                          <p className="px-3 py-2 text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2 font-mono">Publishing</p>
+                          <SettingsTab active={activeSettingsTab === 'github'} onClick={() => { setActiveSettingsTab('github'); }} icon={<Github className="w-4 h-4"/>} label="GitHub Pages Setup" />
+                          <SettingsTab active={activeSettingsTab === 'api_key_guide'} onClick={() => { setActiveSettingsTab('api_key_guide'); }} icon={<HelpCircle className="w-4 h-4"/>} label="How to get API Key" />
+                       </div>
+
+                       <div className="mt-auto pt-6">
+                          <button onClick={() => signOut(auth)} className="w-full flex items-center gap-3 px-3 py-2 text-red-500 hover:bg-red-50 rounded-xl transition-all text-xs font-bold">
+                             <LogOut className="w-4 h-4"/>
+                             Terminate Link
+                          </button>
+                       </div>
+                   </div>
+
+                   {/* Settings Content */}
+                   <div className="flex-1 flex flex-col bg-white overflow-hidden">
+                      <header className="p-10 border-b border-slate-50 flex items-center justify-between shrink-0 bg-white/50 backdrop-blur-md">
+                         <div>
+                            <h2 className="text-2xl font-black text-slate-900 capitalize italic">{activeSettingsTab.replace('_', ' ')}</h2>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Nexus Intelligence Parameters</p>
+                         </div>
+                         <button onClick={() => setSettingsOpen(false)} className="p-3 bg-slate-50 text-slate-400 hover:text-slate-900 rounded-2xl transition-all hover:scale-110">
+                            <X className="w-6 h-6" />
+                         </button>
+                      </header>
+
+                      <div className="flex-1 overflow-y-auto p-12 custom-scrollbar">
+                         {activeSettingsTab === 'general' && (
+                           <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                             <div className="flex items-center gap-6">
+                                <img src={user.photoURL || `https://ui-avatars.com/api/?name=${user.email}`} className="w-20 h-20 rounded-[2rem] shadow-xl border-4 border-white" alt="Avatar"/>
+                                <div>
+                                   <h4 className="text-xl font-black text-slate-900">{user.displayName || 'Nexus User'}</h4>
+                                   <p className="text-sm font-medium text-slate-400">{user.email}</p>
+                                </div>
+                             </div>
+                             <div className="grid grid-cols-2 gap-6">
+                                <InputGroup label="Display Username" value={user.displayName || ''} disabled={true}/>
+                                <InputGroup label="Neural ID (Email)" value={user.email || ''} disabled={true}/>
+                                <SelectGroup 
+                                   label="Primary Language" 
+                                   options={['English', 'Spanish', 'French', 'German', 'Japanese', 'Hindi']} 
+                                   defaultValue="English"
+                                />
+                                <SelectGroup 
+                                   label="Interface Timezone" 
+                                   options={['UTC', 'PST', 'EST', 'GMT', 'IST']} 
+                                   defaultValue="IST"
+                                />
+                             </div>
+                           </div>
+                         )}
+
+                         {false && (
+                           <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                             <div className="p-8 bg-indigo-600 rounded-[32px] text-white overflow-hidden relative group">
+                                <div className="absolute top-0 right-0 p-12 opacity-10 group-hover:scale-110 transition-transform">
+                                   <Zap className="w-48 h-48" />
+                                </div>
+                                <div className="relative z-10">
+                                   <h4 className="text-3xl font-black mb-3">Nexus Auto</h4>
+                                   <p className="text-indigo-100 text-sm font-medium max-w-sm leading-relaxed mb-6">
+                                      Nexus Auto adapts following high-speed reasoning, deep creativity, and biological-like patterns to ensure optimal output.
+                                   </p>
+                                   <div className="flex flex-wrap gap-4">
+                                      {['turbo', 'deep_think', 'creative', 'quantum_qwen'].map(m => (
+                                        <button 
+                                          key={m}
+                                          onClick={() => setNexusSettings(prev => ({ ...prev, modelMode: m as any }))}
+                                          className={cn(
+                                            "px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
+                                            nexusSettings.modelMode === m ? "bg-white text-indigo-600 shadow-xl" : "bg-indigo-500/50 hover:bg-indigo-500"
+                                          )}
+                                        >
+                                          {m.replace('_', ' ')}
+                                        </button>
+                                      ))}
+                                   </div>
+                                </div>
+                             </div>
+
+                             <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+                                <div className="space-y-6">
+                                   <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">AI Personality</h5>
+                                   <div className="grid grid-cols-2 gap-3">
+                                      {['assistant', 'coder', 'teacher', 'researcher', 'friendly', 'professional'].map(p => (
+                                        <button 
+                                          key={p}
+                                          onClick={() => setNexusSettings(prev => ({ ...prev, personality: p as any }))}
+                                          className={cn(
+                                            "px-4 py-3 rounded-2xl border text-xs font-bold transition-all text-left",
+                                            nexusSettings.personality === p ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-100 hover:bg-slate-50"
+                                          )}
+                                        >
+                                          {p.charAt(0).toUpperCase() + p.slice(1)}
+                                        </button>
+                                      ))}
+                                   </div>
+                                </div>
+
+                                <div className="space-y-8">
+                                   <RadioGroup 
+                                      label="Response Style" 
+                                      options={['precise', 'balanced', 'creative']} 
+                                      value={nexusSettings.style}
+                                      onChange={(v) => setNexusSettings(prev => ({ ...prev, style: v as any }))}
+                                   />
+                                   <RadioGroup 
+                                      label="Response Length" 
+                                      options={['short', 'medium', 'long']} 
+                                      value={nexusSettings.length}
+                                      onChange={(v) => setNexusSettings(prev => ({ ...prev, length: v as any }))}
+                                   />
+                                </div>
+                             </div>
+                           </div>
+                         )}
+
+                         {activeSettingsTab === 'memory' && (
+                           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                             <ToggleGroup icon={<History />} label="Cognitive Retention" description="Allow Nexus to recall context from previous messages in this session." enabled={true} />
+                             <ToggleGroup icon={<Lock />} label="Ephemeral Session" description="Discard all context immediately after link termination." enabled={false} />
+                             <div className="p-8 bg-slate-50 rounded-[32px] border border-slate-200">
+                                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-6">Conversation Depth</p>
+                                <div className="relative h-2 w-full bg-slate-200 rounded-full">
+                                   <div className="absolute left-0 top-0 h-full w-[60%] bg-indigo-600 rounded-full" />
+                                   <div className="absolute left-[60%] -translate-x-1/2 -top-2 w-6 h-6 bg-white border-4 border-indigo-600 rounded-full shadow-lg" />
+                                </div>
+                                <div className="flex items-center justify-between mt-4">
+                                   <span className="text-[10px] font-bold text-slate-400">SURFACE</span>
+                                   <span className="text-[10px] font-bold text-slate-600">DEEP (60 Tokens)</span>
+                                   <span className="text-[10px] font-bold text-slate-400">INFINITE</span>
+                                </div>
+                             </div>
+                             <button className="w-full py-4 bg-red-50 text-red-500 rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-red-100 transition-all">
+                                Wipe All Neural Memory
+                             </button>
+                           </div>
+                         )}
+
+                         {activeSettingsTab === 'routing' && (
+                            <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-300 p-2 text-slate-800">
+                              {/* Notice Bar */}
+                              <div className="p-8 bg-amber-50 border border-amber-200 rounded-[32px] text-amber-900 space-y-3">
+                                 <div className="flex items-center gap-3">
+                                    <AlertCircle className="w-6 h-6 text-amber-600 shrink-0" />
+                                    <h4 className="text-sm font-black tracking-tight uppercase">User Connection mode active</h4>
+                                 </div>
+                                 <p className="text-xs font-medium text-amber-800 leading-relaxed">
+                                    This workspace operates on a <strong>user-powered configuration</strong>. Backend developer keys are not provided. You must input your personal keys below to chat or write code.
+                                 </p>
+                              </div>
+
+                              {/* Connect Keys Box */}
+                              <div className="space-y-6">
+                                 <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest font-mono">Credentials Config</h5>
+                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div className="space-y-2">
+                                       <div className="flex items-center justify-between">
+                                          <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">OpenRouter API Key ID</label>
+                                          <span className="text-[8px] font-bold text-indigo-500 uppercase">Llama Prompt Routing</span>
+                                       </div>
+                                       <input 
+                                          type="password" 
+                                          placeholder="sk-or-v1-..."
+                                          value={customOpenRouterKey}
+                                          onChange={(e) => setCustomOpenRouterKey(e.target.value)}
+                                          className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-3.5 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20 shadow-inner"
+                                       />
+                                    </div>
+
+                                    <div className="space-y-2">
+                                       <div className="flex items-center justify-between">
+                                          <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">NVIDIA GPU NIM API Key</label>
+                                          <span className="text-[8px] font-bold text-indigo-500 uppercase">GPU Code Acceleration</span>
+                                       </div>
+                                       <input 
+                                          type="password" 
+                                          placeholder="nvapi-..."
+                                          value={customNvidiaKey}
+                                          onChange={(e) => setCustomNvidiaKey(e.target.value)}
+                                          className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-3.5 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20 shadow-inner"
+                                       />
+                                    </div>
+                                 </div>
+                              </div>
+
+                              {/* Target Selection Box */}
+                              <div className="space-y-6">
+                                 <div>
+                                    <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Purpose-to-Model Routing Assignment</h5>
+                                    <p className="text-[10px] text-slate-400 font-bold mt-1 uppercase">Nexus Adaptive routes prompts dynamically using these target assignments</p>
+                                 </div>
+                                 
+                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 p-8 rounded-[36px] border border-slate-100">
+                                    {Object.keys(purposeMapping).map((purpose) => {
+                                       const filteredModels = allAvailableModels;
+                                       return (
+                                          <div key={purpose} className="space-y-2">
+                                             <label className="text-[10px] font-black text-slate-600 uppercase tracking-widest flex items-center gap-2">
+                                                <div className="w-2.5 h-2.5 rounded-full bg-indigo-500" />
+                                                {purpose} Engine
+                                             </label>
+                                             <div className="relative">
+                                                <select 
+                                                   value={purposeMapping[purpose] || ''} 
+                                                   onChange={(e) => setPurposeMapping(prev => ({ ...prev, [purpose]: e.target.value }))}
+                                                   className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-900 appearance-none focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
+                                                >
+                                                   {filteredModels.map(m => (
+                                                      <option key={m.id} value={m.id}>
+                                                         {m.name} [{m.provider.toUpperCase()} - {m.costType?.toUpperCase() || 'FREE'}]
+                                                      </option>
+                                                   ))}
+                                                </select>
+                                                <ChevronRight className="w-4 h-4 text-slate-400 absolute right-4 top-1/2 -translate-y-1/2 rotate-90 pointer-events-none" />
+                                             </div>
+                                          </div>
+                                       );
+                                    })}
+                                 </div>
+                              </div>
+                            </div>
+                          )}
+
+                         {activeSettingsTab === 'custom_models' && (
+                           <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-300 p-2 text-slate-800 pb-12">
+                              {/* Header Banner */}
+                              <div className="p-8 bg-slate-900 bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-950 text-white rounded-[32px] overflow-hidden relative shadow-xl border border-slate-800">
+                                 <div className="absolute top-0 right-0 p-8 opacity-10">
+                                    <Cpu className="w-48 h-48" />
+                                 </div>
+                                 <div className="relative z-10 text-left space-y-2">
+                                    <div className="px-3 py-1 bg-indigo-500/30 text-indigo-200 border border-indigo-500/30 rounded-full text-[9px] font-black uppercase tracking-widest inline-flex items-center gap-2">
+                                       <Sparkles className="w-3 h-3 text-indigo-400" /> Custom Neural Hub
+                                    </div>
+                                    <h4 className="text-2xl font-black italic tracking-tight">Custom Models & Provider API Hub</h4>
+                                    <p className="text-indigo-200 text-xs font-semibold max-w-2xl leading-relaxed">
+                                       Connect custom OpenAI-compatible API providers (NVIDIA NIM <code className="bg-indigo-900/60 px-1 py-0.5 rounded font-mono">nvapi-...</code>, OpenRouter, Groq, DeepSeek, Together, Anthropic, or custom endpoints). Generate & fetch live model IDs from your OpenRouter key or enter custom model IDs, and assign models to specific prompt types!
+                                    </p>
+                                 </div>
+                              </div>
+
+                              {/* Section 1: OpenRouter Dynamic Model Generator */}
+                              <div className="p-8 bg-slate-50 border border-slate-200 rounded-[32px] space-y-6 text-left">
+                                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200/80 pb-4">
+                                    <div>
+                                       <div className="flex items-center gap-2">
+                                          <RefreshCw className="w-4 h-4 text-indigo-600" />
+                                          <h5 className="text-sm font-black uppercase tracking-wider text-slate-900">OpenRouter Model Explorer & Generator</h5>
+                                       </div>
+                                       <p className="text-xs text-slate-500 font-medium mt-1">
+                                          Generate and select models directly from your pasted OpenRouter API Key (<code className="font-mono text-[11px]">sk-or-v1-...</code>).
+                                       </p>
+                                    </div>
+                                    <button 
+                                       onClick={() => handleFetchOpenRouterModels()} 
+                                       disabled={fetchingOpenRouterModels}
+                                       className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center gap-2 shrink-0 active:scale-95 disabled:opacity-50"
+                                    >
+                                       <RefreshCw className={`w-3.5 h-3.5 ${fetchingOpenRouterModels ? 'animate-spin' : ''}`} />
+                                       {fetchingOpenRouterModels ? 'Generating Models...' : 'Fetch OpenRouter Models'}
+                                    </button>
+                                 </div>
+
+                                 {/* OpenRouter Key status / Quick paste input */}
+                                 <div className="space-y-3">
+                                    <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                                       <span>OpenRouter API Key Status:</span>
+                                       {customOpenRouterKey ? (
+                                          <span className="text-emerald-600 bg-emerald-100 px-2.5 py-0.5 rounded-full font-mono text-[10px] font-black">
+                                             Key Connected ({customOpenRouterKey.slice(0, 10)}...)
+                                          </span>
+                                       ) : (
+                                          <span className="text-amber-600 bg-amber-100 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                             No Key Configured
+                                          </span>
+                                       )}
+                                    </div>
+
+                                    {!customOpenRouterKey && (
+                                       <div className="flex gap-2">
+                                          <input 
+                                             type="password"
+                                             placeholder="Paste OpenRouter Key (sk-or-v1-...)"
+                                             value={newModelApiKey}
+                                             onChange={(e) => setNewModelApiKey(e.target.value)}
+                                             className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
+                                          />
+                                          <button 
+                                             onClick={() => {
+                                                if (newModelApiKey.trim()) {
+                                                   setCustomOpenRouterKey(newModelApiKey.trim());
+                                                   handleFetchOpenRouterModels(newModelApiKey.trim());
+                                                } else {
+                                                   alert("Please paste your OpenRouter key first.");
+                                                }
+                                             }}
+                                             className="px-4 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-all shrink-0"
+                                          >
+                                             Save & Generate
+                                          </button>
+                                       </div>
+                                    )}
+
+                                    {openRouterFetchMsg && (
+                                       <div className={`p-3 rounded-xl text-xs font-bold ${
+                                          openRouterFetchMsg.type === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' :
+                                          openRouterFetchMsg.type === 'error' ? 'bg-rose-50 text-rose-800 border border-rose-200' :
+                                          'bg-blue-50 text-blue-800 border border-blue-200'
+                                       }`}>
+                                          {openRouterFetchMsg.text}
+                                       </div>
+                                    )}
+
+                                    {/* Filtered models list dropdown preview */}
+                                    {openRouterFetchedModels.length > 0 && (
+                                       <div className="space-y-2 pt-2">
+                                          <div className="flex items-center justify-between">
+                                             <span className="text-[10px] font-black uppercase text-slate-400">Available Generated Models ({openRouterFetchedModels.length})</span>
+                                             <input 
+                                                type="text"
+                                                placeholder="Search models..."
+                                                value={openRouterFilterQuery}
+                                                onChange={(e) => setOpenRouterFilterQuery(e.target.value)}
+                                                className="bg-white border border-slate-200 rounded-lg px-3 py-1 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-48"
+                                             />
+                                          </div>
+                                          <div className="max-h-48 overflow-y-auto bg-white border border-slate-200 rounded-xl p-2 space-y-1 custom-scrollbar">
+                                             {openRouterFetchedModels
+                                                .filter(m => !openRouterFilterQuery || m.id.toLowerCase().includes(openRouterFilterQuery.toLowerCase()) || m.name.toLowerCase().includes(openRouterFilterQuery.toLowerCase()))
+                                                .slice(0, 40)
+                                                .map(m => (
+                                                   <div 
+                                                      key={m.id}
+                                                      onClick={() => {
+                                                         setNewModelProvider('openrouter');
+                                                         setNewModelId(m.id);
+                                                         setNewModelName(m.name);
+                                                      }}
+                                                      className="p-2 hover:bg-indigo-50 rounded-lg cursor-pointer flex items-center justify-between text-xs transition-colors group"
+                                                   >
+                                                      <div>
+                                                         <p className="font-bold text-slate-800 group-hover:text-indigo-600">{m.name}</p>
+                                                         <p className="text-[10px] font-mono text-slate-400">{m.id}</p>
+                                                      </div>
+                                                      <span className="text-[9px] font-bold text-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity">Select Model &rarr;</span>
+                                                   </div>
+                                                ))}
+                                          </div>
+                                       </div>
+                                    )}
+                                 </div>
+                              </div>
+
+                              {/* Section 2: Register New Custom Model Form */}
+                              <div className="p-8 bg-white border border-slate-200 rounded-[32px] space-y-6 text-left shadow-sm">
+                                 <h5 className="text-sm font-black uppercase tracking-wider text-slate-900 flex items-center gap-2">
+                                    <Plus className="w-4 h-4 text-indigo-600" /> Register Custom Provider Model
+                                 </h5>
+
+                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    {/* Provider Selector */}
+                                    <div className="space-y-2">
+                                       <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">1. Select API Provider</label>
+                                       <select 
+                                          value={newModelProvider}
+                                          onChange={(e) => {
+                                             const p = e.target.value as any;
+                                             setNewModelProvider(p);
+                                             if (p === 'nvidia') {
+                                                setNewModelBaseUrl('https://integrate.api.nvidia.com/v1');
+                                                if (customNvidiaKey) setNewModelApiKey(customNvidiaKey);
+                                             } else if (p === 'openrouter') {
+                                                setNewModelBaseUrl('https://openrouter.ai/api/v1');
+                                                if (customOpenRouterKey) setNewModelApiKey(customOpenRouterKey);
+                                             } else if (p === 'openai') {
+                                                setNewModelBaseUrl('https://api.openai.com/v1');
+                                             } else if (p === 'groq') {
+                                                setNewModelBaseUrl('https://api.groq.com/openai/v1');
+                                             } else if (p === 'deepseek') {
+                                                setNewModelBaseUrl('https://api.deepseek.com/v1');
+                                             } else if (p === 'together') {
+                                                setNewModelBaseUrl('https://api.together.xyz/v1');
+                                             } else if (p === 'anthropic') {
+                                                setNewModelBaseUrl('https://api.anthropic.com/v1');
+                                             }
+                                          }}
+                                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
+                                       >
+                                          <option value="nvidia">NVIDIA NIM (nvapi-...)</option>
+                                          <option value="openrouter">OpenRouter (sk-or-v1-...)</option>
+                                          <option value="openai">OpenAI (sk-...)</option>
+                                          <option value="groq">Groq Acceleration (gsk_...)</option>
+                                          <option value="deepseek">DeepSeek AI (sk-...)</option>
+                                          <option value="together">Together AI</option>
+                                          <option value="anthropic">Anthropic Claude</option>
+                                          <option value="custom">Custom Base Endpoint</option>
+                                       </select>
+                                    </div>
+
+                                    {/* API Key */}
+                                    <div className="space-y-2">
+                                       <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">2. API Key (`nvapi-...` / `sk-...` / `gsk_...`)</label>
+                                       <input 
+                                          type="password"
+                                          placeholder={newModelProvider === 'nvidia' ? 'nvapi-...' : 'sk-or-v1-...'}
+                                          value={newModelApiKey}
+                                          onChange={(e) => setNewModelApiKey(e.target.value)}
+                                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
+                                       />
+                                    </div>
+
+                                    {/* Base URL */}
+                                    <div className="space-y-2">
+                                       <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">3. Provider Base Endpoint URL</label>
+                                       <input 
+                                          type="text"
+                                          placeholder="https://integrate.api.nvidia.com/v1"
+                                          value={newModelBaseUrl}
+                                          onChange={(e) => setNewModelBaseUrl(e.target.value)}
+                                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
+                                       />
+                                    </div>
+
+                                    {/* Model ID Input or Selector */}
+                                    <div className="space-y-2">
+                                       <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">4. Model ID / String</label>
+                                       <input 
+                                          type="text"
+                                          placeholder={
+                                             newModelProvider === 'nvidia' ? 'nvidia/nemotron-4-340b-instruct' :
+                                             newModelProvider === 'groq' ? 'llama-3.3-70b-versatile' :
+                                             newModelProvider === 'deepseek' ? 'deepseek-chat' :
+                                             'meta-llama/llama-3.3-70b-instruct:free'
+                                          }
+                                          value={newModelId}
+                                          onChange={(e) => setNewModelId(e.target.value)}
+                                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
+                                       />
+                                    </div>
+
+                                    {/* Friendly Display Name */}
+                                    <div className="space-y-2 md:col-span-2">
+                                       <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">5. Model Friendly Name</label>
+                                       <input 
+                                          type="text"
+                                          placeholder="e.g. NVIDIA Nemotron Super 120B, Groq Fast Llama, DeepSeek Coder"
+                                          value={newModelName}
+                                          onChange={(e) => setNewModelName(e.target.value)}
+                                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
+                                       />
+                                    </div>
+
+                                    {/* Assign Question / Task Types */}
+                                    <div className="space-y-3 md:col-span-2">
+                                       <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">6. Assign Question / Prompt Types for Auto-Routing</label>
+                                       <div className="flex flex-wrap gap-2">
+                                          {[
+                                             'General Chat',
+                                             'Coding',
+                                             'Reasoning / Math',
+                                             'File Analysis',
+                                             'Image Analysis',
+                                             'Video Analysis',
+                                             'Agents / Workflows',
+                                             'Creative Writing'
+                                          ].map(taskType => {
+                                             const isSelected = newModelAssignedTypes.includes(taskType);
+                                             return (
+                                                <button 
+                                                   key={taskType}
+                                                   type="button"
+                                                   onClick={() => {
+                                                      if (isSelected) {
+                                                         setNewModelAssignedTypes(prev => prev.filter(t => t !== taskType));
+                                                      } else {
+                                                         setNewModelAssignedTypes(prev => [...prev, taskType]);
+                                                      }
+                                                   }}
+                                                   className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                                                      isSelected 
+                                                         ? 'bg-indigo-600 text-white shadow-sm' 
+                                                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                                   }`}
+                                                >
+                                                   {isSelected && <Check className="w-3 h-3" />}
+                                                   {taskType}
+                                                </button>
+                                             );
+                                          })}
+                                       </div>
+                                    </div>
+                                 </div>
+
+                                 <button 
+                                    onClick={handleSaveCustomModel}
+                                    className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl text-xs font-black uppercase tracking-widest transition-all shadow-md flex items-center justify-center gap-2 active:scale-98"
+                                 >
+                                    <Plus className="w-4 h-4 text-indigo-400" /> Save & Register Custom Model
+                                 </button>
+                              </div>
+
+                              {/* Section 3: Registered Custom Models List */}
+                              <div className="space-y-4 text-left">
+                                 <h5 className="text-xs font-black uppercase tracking-widest text-slate-400">Registered Custom Models ({customModels.length})</h5>
+
+                                 <div className="grid grid-cols-1 gap-4">
+                                    {customModels.map(cm => {
+                                       const testState = testConnectionStatus[cm.id];
+                                       return (
+                                          <div key={cm.id} className="p-6 bg-slate-50 border border-slate-200 rounded-[28px] space-y-4">
+                                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200/60 pb-3">
+                                                <div className="flex items-center gap-3">
+                                                   <div className="w-10 h-10 rounded-2xl bg-indigo-100 text-indigo-600 flex items-center justify-center font-black text-sm uppercase shrink-0">
+                                                      {cm.provider.slice(0, 2)}
+                                                   </div>
+                                                   <div>
+                                                      <h6 className="text-sm font-black text-slate-900">{cm.name}</h6>
+                                                      <p className="text-[10px] font-mono text-slate-500">{cm.modelId}</p>
+                                                   </div>
+                                                </div>
+
+                                                <div className="flex items-center gap-2">
+                                                   <span className="px-3 py-1 bg-slate-900 text-white rounded-full text-[9px] font-black uppercase">
+                                                      {cm.provider}
+                                                   </span>
+                                                   <button 
+                                                      onClick={() => setCustomModels(prev => prev.filter(m => m.id !== cm.id))}
+                                                      className="p-2 text-rose-500 hover:bg-rose-100 rounded-xl transition-all"
+                                                      title="Delete model"
+                                                   >
+                                                      <Trash2 className="w-4 h-4" />
+                                                   </button>
+                                                </div>
+                                             </div>
+
+                                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-medium text-slate-600">
+                                                <div>
+                                                   <span className="text-[9px] font-black text-slate-400 uppercase block">Endpoint Base URL</span>
+                                                   <span className="font-mono text-[11px] text-slate-800 break-all">{cm.baseUrl}</span>
+                                                </div>
+                                                <div>
+                                                   <span className="text-[9px] font-black text-slate-400 uppercase block">API Key</span>
+                                                   <span className="font-mono text-[11px] text-slate-800">
+                                                      {cm.apiKey ? `${cm.apiKey.slice(0, 8)}...*****` : (cm.provider === 'nvidia' && customNvidiaKey ? `${customNvidiaKey.slice(0, 8)}...***** (Global Key)` : 'Default Session Key')}
+                                                   </span>
+                                                </div>
+                                             </div>
+
+                                             {/* Assigned Task Types Badges */}
+                                             <div>
+                                                <span className="text-[9px] font-black text-slate-400 uppercase block mb-1.5">Assigned Question / Task Types</span>
+                                                <div className="flex flex-wrap gap-1.5">
+                                                   {cm.assignedTypes.map(t => (
+                                                      <span key={t} className="px-2.5 py-1 bg-indigo-100 text-indigo-800 rounded-lg text-[10px] font-bold">
+                                                         {t}
+                                                      </span>
+                                                   ))}
+                                                </div>
+                                             </div>
+
+                                             {/* Test Connection Button */}
+                                             <div className="pt-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                                                <button 
+                                                   onClick={() => testCustomModelConnection(cm)}
+                                                   disabled={testState?.testing}
+                                                   className="px-4 py-2 bg-white border border-slate-200 hover:bg-slate-100 text-slate-800 rounded-xl text-xs font-bold transition-all shadow-sm flex items-center gap-2 shrink-0 disabled:opacity-50"
+                                                >
+                                                   <Activity className={`w-3.5 h-3.5 text-indigo-600 ${testState?.testing ? 'animate-spin' : ''}`} />
+                                                   {testState?.testing ? 'Testing Endpoint...' : 'Test Connection'}
+                                                </button>
+
+                                                {testState?.result && (
+                                                   <span className={`text-xs font-bold ${testState.error ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                                      {testState.result}
+                                                   </span>
+                                                )}
+                                             </div>
+                                          </div>
+                                       );
+                                    })}
+                                 </div>
+                              </div>
+                           </div>
+                         )}
+
+                         {false && (
+                           <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                              <div className="grid grid-cols-2 gap-6">
+                                 <div className="p-6 bg-slate-50 border border-slate-200 rounded-[32px] space-y-4">
+                                    <div className="flex items-center justify-between">
+                                       <Monitor className="w-5 h-5 text-slate-400" />
+                                       <span className="text-[9px] font-black text-indigo-600 uppercase">Active</span>
+                                    </div>
+                                    <h4 className="text-sm font-black">Light Interface</h4>
+                                    <p className="text-[10px] text-slate-400 font-medium">Clean, biological daylight aesthetics.</p>
+                                 </div>
+                                 <div className="p-6 bg-slate-900 border border-slate-800 rounded-[32px] space-y-4">
+                                    <h4 className="text-sm font-black text-white">Neural Dark</h4>
+                                    <p className="text-[10px] text-slate-500 font-medium">High contrast for deep focus sessions.</p>
+                                 </div>
+                              </div>
+                              <div className="space-y-6">
+                                 <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Accent Configuration</h5>
+                                 <div className="flex gap-4">
+                                    {['#4f46e5', '#10b981', '#f59e0b', '#3b82f6', '#ec4899'].map(c => (
+                                      <button key={c} style={{ backgroundColor: c }} className="w-10 h-10 rounded-full shadow-lg ring-2 ring-transparent hover:ring-slate-300 transition-all"/>
+                                    ))}
+                                 </div>
+                              </div>
+                              <ToggleGroup icon={<Sparkles />} label="Frost Glass Effects" description="Enable blur and glassmorphism across the interface." enabled={true} />
+                              <ToggleGroup icon={<Zap />} label="High Energy Animations" description="Dynamic transitions and micro-motion feedback." enabled={true} />
+                           </div>
+                         )}
+
+                         {false && (
+                           <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                             <div className="grid grid-cols-3 gap-6">
+                                <StatCard label="Total Messages" value="1,284" sub="Last 30 days" />
+                                <StatCard label="Tokens Processed" value="482k" sub="Nexus Link v3" />
+                                <StatCard label="Avg Response" value="1.4s" sub="Sub-neural speed" />
+                             </div>
+                             <div className="p-10 bg-slate-50 rounded-[40px] border border-slate-200 h-64 flex items-end gap-2 px-8">
+                                {[40, 70, 45, 90, 65, 80, 100, 55, 75, 60, 85, 40].map((h, i) => (
+                                  <div key={i} style={{ height: `${h}%` }} className="flex-1 bg-indigo-500 rounded-t-lg opacity-40 hover:opacity-100 transition-all" />
+                                ))}
+                             </div>
+                           </div>
+                         )}
+
+                         {activeSettingsTab === 'api_key_guide' && (
+                           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                              <div className="p-8 bg-slate-900 bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-950 text-white rounded-[32px] overflow-hidden relative shadow-xl border border-slate-800">
+                                 <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg shrink-0">
+                                    <Key className="w-8 h-8" />
+                                 </div>
+                                 <div>
+                                    <div className="px-3 py-0.5 bg-indigo-500/30 text-indigo-200 border border-indigo-500/30 rounded-full text-[9px] font-black uppercase tracking-widest inline-flex items-center gap-1.5 mb-1"><HelpCircle className="w-3 h-3 text-indigo-400" /> Provider Key Acquisition Guide</div><h4 className="text-2xl font-black italic tracking-tight">How to get the API KEY from your provider</h4>
+                                    <p className="text-indigo-200 text-xs font-semibold max-w-2xl leading-relaxed">Step-by-step instructions to create, copy, and set up your personal API keys for OpenRouter, NVIDIA NIM, Groq, OpenAI, DeepSeek, and Anthropic.</p>
+                                  </div>
+                               </div>
+                               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-left">
+                                  {/* OpenRouter */}
+                                  <div className="p-6 bg-slate-50 border border-slate-200 rounded-[28px] space-y-4 hover:border-indigo-300 transition-all text-left">
+                                     <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-3">
+                                           <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white flex items-center justify-center font-black text-xs uppercase shadow-md">
+                                              OR
+                                           </div>
+                                           <div>
+                                              <h6 className="text-sm font-black text-slate-900">OpenRouter API Key</h6>
+                                              <span className="text-[10px] font-mono text-indigo-600 font-bold">Key format: sk-or-v1-...</span>
+                                           </div>
+                                        </div>
+                                        <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-xl text-xs font-bold flex items-center gap-1 transition-colors">
+                                           Portal <ExternalLink className="w-3 h-3" />
+                                        </a>
+                                     </div>
+                                     <ol className="space-y-1.5 text-xs text-slate-600 font-medium list-decimal list-inside leading-relaxed pl-1">
+                                        <li>Sign up/log in at <a href="https://openrouter.ai" target="_blank" rel="noopener noreferrer" className="text-indigo-600 underline font-bold">openrouter.ai</a>.</li>
+                                        <li>Go to <strong>Keys</strong> tab and click <strong>Create Key</strong>.</li>
+                                        <li>Copy key starting with <code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-[11px] text-slate-800">sk-or-v1-...</code>.</li>
+                                        <li>Paste key into <strong>Custom Models</strong> configuration.</li>
+                                     </ol>
+                                  </div>
+
+                                  {/* NVIDIA NIM */}
+                                  <div className="p-6 bg-slate-50 border border-slate-200 rounded-[28px] space-y-4 hover:border-emerald-300 transition-all text-left">
+                                     <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-3">
+                                           <div className="w-10 h-10 rounded-2xl bg-emerald-600 text-white flex items-center justify-center font-black text-xs uppercase shadow-md">
+                                              NV
+                                           </div>
+                                           <div>
+                                              <h6 className="text-sm font-black text-slate-900">NVIDIA NIM GPU Key</h6>
+                                              <span className="text-[10px] font-mono text-emerald-600 font-bold">Key format: nvapi-...</span>
+                                           </div>
+                                        </div>
+                                        <a href="https://build.nvidia.com" target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 rounded-xl text-xs font-bold flex items-center gap-1 transition-colors">
+                                           Portal <ExternalLink className="w-3 h-3" />
+                                        </a>
+                                     </div>
+                                     <ol className="space-y-1.5 text-xs text-slate-600 font-medium list-decimal list-inside leading-relaxed pl-1">
+                                        <li>Visit <a href="https://build.nvidia.com" target="_blank" rel="noopener noreferrer" className="text-emerald-600 underline font-bold">build.nvidia.com</a>.</li>
+                                        <li>Sign in for an NVIDIA Developer account.</li>
+                                        <li>Select a model and click <strong>Get API Key</strong>.</li>
+                                        <li>Copy key starting with <code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-[11px] text-slate-800">nvapi-...</code>.</li>
+                                     </ol>
+                                  </div>
+
+                                  {/* Groq */}
+                                  <div className="p-6 bg-slate-50 border border-slate-200 rounded-[28px] space-y-4 hover:border-orange-300 transition-all text-left">
+                                     <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-3">
+                                           <div className="w-10 h-10 rounded-2xl bg-orange-600 text-white flex items-center justify-center font-black text-xs uppercase shadow-md">
+                                              GQ
+                                           </div>
+                                           <div>
+                                              <h6 className="text-sm font-black text-slate-900">Groq Speed Key</h6>
+                                              <span className="text-[10px] font-mono text-orange-600 font-bold">Key format: gsk_...</span>
+                                           </div>
+                                        </div>
+                                        <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-orange-50 text-orange-600 hover:bg-orange-100 rounded-xl text-xs font-bold flex items-center gap-1 transition-colors">
+                                           Portal <ExternalLink className="w-3 h-3" />
+                                        </a>
+                                     </div>
+                                     <ol className="space-y-1.5 text-xs text-slate-600 font-medium list-decimal list-inside leading-relaxed pl-1">
+                                        <li>Log in to <a href="https://console.groq.com" target="_blank" rel="noopener noreferrer" className="text-orange-600 underline font-bold">console.groq.com</a>.</li>
+                                        <li>Navigate to <strong>API Keys</strong> sidebar item.</li>
+                                        <li>Click <strong>Create API Key</strong> and copy key (<code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-[11px]">gsk_...</code>).</li>
+                                        <li>Paste key under <strong>Custom Models</strong> tab.</li>
+                                     </ol>
+                                  </div>
+
+                                  {/* OpenAI */}
+                                  <div className="p-6 bg-slate-50 border border-slate-200 rounded-[28px] space-y-4 hover:border-slate-400 transition-all text-left">
+                                     <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-3">
+                                           <div className="w-10 h-10 rounded-2xl bg-slate-900 text-white flex items-center justify-center font-black text-xs uppercase shadow-md">
+                                              AI
+                                           </div>
+                                           <div>
+                                              <h6 className="text-sm font-black text-slate-900">OpenAI API Key</h6>
+                                              <span className="text-[10px] font-mono text-slate-600 font-bold">Key format: sk-...</span>
+                                           </div>
+                                        </div>
+                                        <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-slate-200 text-slate-800 hover:bg-slate-300 rounded-xl text-xs font-bold flex items-center gap-1 transition-colors">
+                                           Portal <ExternalLink className="w-3 h-3" />
+                                        </a>
+                                     </div>
+                                     <ol className="space-y-1.5 text-xs text-slate-600 font-medium list-decimal list-inside leading-relaxed pl-1">
+                                        <li>Sign in at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-slate-900 underline font-bold">platform.openai.com</a>.</li>
+                                        <li>Click <strong>Create new secret key</strong>.</li>
+                                        <li>Copy key starting with <code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-[11px]">sk-...</code>.</li>
+                                        <li>Use under <strong>Custom Models</strong> tab.</li>
+                                     </ol>
+                                  </div>
+
+                                  {/* DeepSeek */}
+                                  <div className="p-6 bg-slate-50 border border-slate-200 rounded-[28px] space-y-4 hover:border-blue-300 transition-all text-left">
+                                     <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-3">
+                                           <div className="w-10 h-10 rounded-2xl bg-blue-600 text-white flex items-center justify-center font-black text-xs uppercase shadow-md">
+                                              DS
+                                           </div>
+                                           <div>
+                                              <h6 className="text-sm font-black text-slate-900">DeepSeek API Key</h6>
+                                              <span className="text-[10px] font-mono text-blue-600 font-bold">Key format: sk-...</span>
+                                           </div>
+                                        </div>
+                                        <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl text-xs font-bold flex items-center gap-1 transition-colors">
+                                           Portal <ExternalLink className="w-3 h-3" />
+                                        </a>
+                                     </div>
+                                     <ol className="space-y-1.5 text-xs text-slate-600 font-medium list-decimal list-inside leading-relaxed pl-1">
+                                        <li>Visit <a href="https://platform.deepseek.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 underline font-bold">platform.deepseek.com</a>.</li>
+                                        <li>Go to <strong>API Keys</strong> section and generate a key.</li>
+                                        <li>Paste key into <strong>Custom Models</strong> with OpenAI-style endpoint.</li>
+                                     </ol>
+                                  </div>
+
+                                  {/* Anthropic */}
+                                  <div className="p-6 bg-slate-50 border border-slate-200 rounded-[28px] space-y-4 hover:border-amber-300 transition-all text-left">
+                                     <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-3">
+                                           <div className="w-10 h-10 rounded-2xl bg-amber-700 text-white flex items-center justify-center font-black text-xs uppercase shadow-md">
+                                              AN
+                                           </div>
+                                           <div>
+                                              <h6 className="text-sm font-black text-slate-900">Anthropic Claude Key</h6>
+                                              <span className="text-[10px] font-mono text-amber-700 font-bold">Key format: sk-ant-...</span>
+                                           </div>
+                                        </div>
+                                        <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-amber-50 text-amber-700 hover:bg-amber-100 rounded-xl text-xs font-bold flex items-center gap-1 transition-colors">
+                                           Portal <ExternalLink className="w-3 h-3" />
+                                        </a>
+                                     </div>
+                                     <ol className="space-y-1.5 text-xs text-slate-600 font-medium list-decimal list-inside leading-relaxed pl-1">
+                                        <li>Visit <a href="https://console.anthropic.com" target="_blank" rel="noopener noreferrer" className="text-amber-700 underline font-bold">console.anthropic.com</a>.</li>
+                                        <li>Navigate to <strong>API Keys</strong> and generate key (<code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-[11px]">sk-ant-...</code>).</li>
+                                        <li>Copy key and register under <strong>Custom Models</strong>.</li>
+                                     </ol>
+                                  </div>
+                                 </div>
+                              </div>
+                           )}
+
+                          {activeSettingsTab === 'github' && (
+                            <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-300 text-slate-800 pb-12">
+                               {/* Header Banner */}
+                               <div className="p-10 bg-slate-900 bg-gradient-to-br from-indigo-900 to-slate-950 text-white rounded-[40px] overflow-hidden relative group shadow-xl border border-slate-800">
+                                  <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
+                                     <Github className="w-40 h-40" />
+                                  </div>
+                                  <div className="relative z-10 text-left">
+                                     <div className="px-2 py-1 bg-indigo-500/30 text-indigo-200 border border-indigo-500/20 rounded-lg text-[9px] font-black uppercase tracking-widest inline-block mb-3 leading-none">
+                                        Stateless Fallback Protocol Enabled
+                                     </div>
+                                     <h4 className="text-3xl font-black italic tracking-tight">Deploy to GitHub Pages</h4>
+                                     <p className="text-indigo-200 text-xs font-semibold max-w-xl leading-relaxed mt-2 text-left">
+                                        This client is engineered on a secure, local-first architecture. When hosted on static platforms like GitHub Pages, it automatically falls back to client-side OpenRouter streaming and Pollinations.ai image rendering. Your secrets are always safe!
+                                     </p>
+                                  </div>
+                               </div>
+
+                               {/* Step by Step Instructions */}
+                               <div className="space-y-6">
+                                  <h5 className="text-xs font-black text-slate-400 uppercase tracking-widest font-mono text-left">Launch Playbook</h5>
+                                  <div className="space-y-4">
+                                     {/* Step 1 */}
+                                     <div className="p-6 bg-slate-50 border border-slate-100 rounded-[28px] flex gap-4 text-left">
+                                        <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-black shrink-0">1</div>
+                                        <div>
+                                           <h6 className="text-xs font-black uppercase tracking-wider text-slate-800">Publish or Export Repository</h6>
+                                           <p className="text-xs text-slate-500 font-semibold mt-1 leading-relaxed">
+                                              Use the general workspace controls (on the settings menu at the topmost bar of AI Studio, NOT Nexus settings sidebar) to export this project as a ZIP or push it directly to your GitHub account.
+                                           </p>
+                                        </div>
+                                     </div>
+
+                                     {/* Step 2 */}
+                                     <div className="p-6 bg-slate-50 border border-slate-100 rounded-[28px] flex gap-4 text-left">
+                                        <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-black shrink-0">2</div>
+                                        <div>
+                                           <h6 className="text-xs font-black uppercase tracking-wider text-slate-800">Install gh-pages module</h6>
+                                           <p className="text-xs text-slate-500 font-semibold mt-1 leading-relaxed mb-3">
+                                              Open your local terminal in the project directory, and run this command of your terminal to add the gh-pages module:
+                                           </p>
+                                           <pre className="p-4 bg-slate-900 text-slate-100 rounded-xl text-[11px] font-mono select-all overflow-x-auto text-left shadow-inner">
+                                              npm install gh-pages --save-dev
+                                           </pre>
+                                        </div>
+                                     </div>
+
+                                     {/* Step 3 */}
+                                     <div className="p-6 bg-slate-50 border border-slate-100 rounded-[28px] flex gap-4 text-left">
+                                        <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-black shrink-0">3</div>
+                                        <div>
+                                           <h6 className="text-xs font-black uppercase tracking-wider text-slate-800">Configure build & deploy scripts</h6>
+                                           <p className="text-xs text-slate-500 font-semibold mt-1 leading-relaxed mb-3">
+                                              Add the homepage link and deployment commands in your package.json file properties:
+                                           </p>
+                                           <pre className="p-4 bg-slate-900 text-slate-50 rounded-xl text-[11px] font-mono select-all overflow-x-auto text-left shadow-inner leading-relaxed">
+{`"homepage": "https://<your-username>.github.io/<your-repo-name>",
+"scripts": {
+  "predeploy": "npm run build",
+  "deploy": "gh-pages -d dist"
+}`}
+                                           </pre>
+                                        </div>
+                                     </div>
+
+                                     {/* Step 4 */}
+                                     <div className="p-6 bg-slate-50 border border-slate-100 rounded-[28px] flex gap-4 text-left">
+                                        <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-black shrink-0">4</div>
+                                        <div>
+                                           <h6 className="text-xs font-black uppercase tracking-wider text-slate-800">Deploy Static Page</h6>
+                                           <p className="text-xs text-slate-500 font-semibold mt-1 leading-relaxed mb-3">
+                                              Run the deployment command to compile your client-side React files and push them to the gh-pages deployment branch:
+                                           </p>
+                                           <pre className="p-4 bg-slate-900 text-slate-100 rounded-xl text-[11px] font-mono select-all overflow-x-auto text-left shadow-inner">
+                                              npm run deploy
+                                           </pre>
+                                        </div>
+                                     </div>
+
+                                     {/* Step 5 */}
+                                     <div className="p-6 bg-slate-50 border border-slate-100 rounded-[28px] flex gap-4 text-left">
+                                        <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-black shrink-0">5</div>
+                                        <div>
+                                           <h6 className="text-xs font-black uppercase tracking-wider text-slate-800">Activate branch on GitHub</h6>
+                                           <p className="text-xs text-slate-500 font-semibold mt-1 leading-relaxed">
+                                              Open your repository settings in GitHub.com &rarr; Pages. Make sure the build source page is targeting your <code>gh-pages</code> branch. Your client browser experience is now live globally!
+                                           </p>
+                                        </div>
+                                     </div>
+                                  </div>
+                               </div>
+                            </div>
+                          )}
+                       </div>
+                    </div>
+                 </div>
+              </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function SettingsTab({ active, onClick, icon, label }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string }) {
+  return (
+    <button 
+      onClick={onClick}
+      className={cn(
+        "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition-all",
+        active ? "bg-white text-indigo-600 shadow-sm ring-1 ring-slate-100" : "text-slate-500 hover:bg-slate-200/50"
+      )}
+    >
+      <div className={cn("transition-colors", active ? "text-indigo-600" : "text-slate-400")}>
+        {icon}
+      </div>
+      {label}
+    </button>
+  );
+}
+
+function InputGroup({ label, value, disabled }: { label: string, value: string, disabled?: boolean }) {
+  return (
+    <div className="space-y-2">
+      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{label}</label>
+      <input 
+        type="text" 
+        defaultValue={value} 
+        disabled={disabled}
+        className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-4 text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20 disabled:opacity-50"
+      />
+    </div>
+  );
+}
+
+function SelectGroup({ label, options, defaultValue }: { label: string, options: string[], defaultValue: string }) {
+  return (
+    <div className="space-y-2">
+      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{label}</label>
+      <div className="relative">
+        <select defaultValue={defaultValue} className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-4 text-sm font-bold text-slate-900 appearance-none focus:outline-none focus:ring-2 focus:ring-indigo-600/20">
+          {options.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+        <ChevronRight className="w-4 h-4 text-slate-400 absolute right-5 top-1/2 -translate-y-1/2 rotate-90" />
+      </div>
+    </div>
+  );
+}
+
+function RadioGroup({ label, options, value, onChange }: { label: string, options: string[], value: string, onChange: (v: string) => void }) {
+  return (
+    <div className="space-y-3">
+      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{label}</label>
+      <div className="flex bg-slate-50 p-1.5 rounded-2xl gap-1">
+        {options.map(o => (
+          <button 
+            key={o}
+            onClick={() => onChange(o)}
+            className={cn(
+              "flex-1 py-3 px-4 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
+              value === o ? "bg-white text-slate-900 shadow-sm" : "text-slate-400 hover:bg-white/50"
+            )}
+          >
+            {o}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ToggleGroup({ icon, label, description, enabled }: { icon: React.ReactNode, label: string, description: string, enabled: boolean }) {
+  return (
+    <div className="flex items-center justify-between p-8 bg-slate-50 rounded-[40px] border border-slate-200">
+       <div className="flex items-center gap-6 text-left">
+          <div className="p-4 bg-white rounded-2xl text-slate-400 shadow-sm">
+             {icon}
+          </div>
+          <div>
+             <p className="text-md font-black text-slate-900">{label}</p>
+             <p className="text-xs font-medium text-slate-400">{description}</p>
+          </div>
+       </div>
+       <div className={cn(
+         "w-14 h-8 rounded-full relative p-1.5 shadow-inner transition-colors duration-300",
+         enabled ? "bg-indigo-600" : "bg-slate-300"
+       )}>
+          <div className={cn(
+            "w-5 h-5 bg-white rounded-full shadow-sm transition-all duration-300",
+            enabled ? "ml-auto" : "ml-0"
+          )} />
+       </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, sub }: { label: string, value: string, sub: string }) {
+  return (
+    <div className="p-8 bg-slate-50 border border-slate-200 rounded-[32px] text-center space-y-2">
+       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{label}</p>
+       <p className="text-3xl font-black text-slate-900 italic tracking-tighter">{value}</p>
+       <p className="text-[10px] font-bold text-indigo-600/50 uppercase">{sub}</p>
+    </div>
+  );
+}
+
+function SuggestionCard({ icon, text, onClick }: { icon: React.ReactNode, text: string, onClick: () => void }) {
+  return (
+    <button 
+      onClick={onClick}
+      className="p-6 border border-slate-200 rounded-[24px] text-left hover:border-indigo-200 hover:bg-indigo-50/10 transition-all group flex flex-col gap-4 bg-white shadow-sm hover:shadow-md"
+    >
+      <div className="p-2.5 w-fit bg-slate-50 text-slate-400 rounded-xl group-hover:text-indigo-600 group-hover:bg-indigo-50 transition-all shadow-sm">
+        {icon}
+      </div>
+      <p className="text-sm font-bold text-slate-600 leading-snug group-hover:text-slate-900 transition-colors">{text}</p>
+    </button>
+  );
+}
