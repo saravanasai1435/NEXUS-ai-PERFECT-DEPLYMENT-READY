@@ -1838,11 +1838,12 @@ function InputGroup({ label, value, disabled }: { label: string, value: string, 
 }
 
 function SelectGroup({ label, options, defaultValue }: { label: string, options: string[], defaultValue: string }) {
+  const [val, setVal] = useState(defaultValue);
   return (
     <div className="space-y-2">
       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{label}</label>
       <div className="relative">
-        <select defaultValue={defaultValue} className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-4 text-sm font-bold text-slate-900 appearance-none focus:outline-none focus:ring-2 focus:ring-indigo-600/20">
+        <select value={val} onChange={(e) => setVal(e.target.value)} className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-4 text-sm font-bold text-slate-900 appearance-none focus:outline-none focus:ring-2 focus:ring-indigo-600/20">
           {options.map(o => <option key={o} value={o}>{o}</option>)}
         </select>
         <ChevronRight className="w-4 h-4 text-slate-400 absolute right-5 top-1/2 -translate-y-1/2 rotate-90" />
@@ -1874,6 +1875,7 @@ function RadioGroup({ label, options, value, onChange }: { label: string, option
 }
 
 function ToggleGroup({ icon, label, description, enabled }: { icon: React.ReactNode, label: string, description: string, enabled: boolean }) {
+  const [active, setActive] = useState(enabled);
   return (
     <div className="flex items-center justify-between p-8 bg-slate-50 rounded-[40px] border border-slate-200">
        <div className="flex items-center gap-6 text-left">
@@ -1887,11 +1889,11 @@ function ToggleGroup({ icon, label, description, enabled }: { icon: React.ReactN
        </div>
        <div className={cn(
          "w-14 h-8 rounded-full relative p-1.5 shadow-inner transition-colors duration-300",
-         enabled ? "bg-indigo-600" : "bg-slate-300"
+         active ? "bg-indigo-600" : "bg-slate-300"
        )}>
           <div className={cn(
             "w-5 h-5 bg-white rounded-full shadow-sm transition-all duration-300",
-            enabled ? "ml-auto" : "ml-0"
+            active ? "ml-auto" : "ml-0"
           )} />
        </div>
     </div>
