@@ -37,28 +37,76 @@ export interface Model {
 
 export const MODELS: Model[] = [
   { 
-    id: 'nvidia-nemotron-3-super-free', 
-    name: 'Nemotron 3 Super 120B Free', 
+    id: 'nexus-auto', 
+    name: 'NEXUS AUTO', 
     provider: 'openrouter', 
     type: 'chat', 
-    description: 'Freshly refined high-capacity conversational NVIDIA voice and instruction tuning powerhouse.',
-    category: 'General Chat',
-    apiModel: 'nvidia/nemotron-3-super-120b-a12b:free',
+    description: 'Smart Router: Dynamically analyzes your prompt and attachments, and switches to the best model for the specific work.',
+    category: 'Auto Routing',
+    apiModel: 'nexus-auto',
     costType: 'free',
-    inputModalities: ['text'],
-    capabilities: ['general']
+    inputModalities: ['text', 'image', 'audio', 'video'],
+    capabilities: ['general', 'coding', 'reasoning', 'image-to-text']
   },
   { 
     id: 'cohere-north-mini-code-free', 
-    name: 'Cohere North Mini Code', 
+    name: 'North Mini Code (Free)', 
     provider: 'openrouter', 
     type: 'code', 
-    description: 'High performance free code generation engine powered by Cohere North Mini.',
+    description: 'High performance free code generation engine powered by Cohere North Mini Code.',
     category: 'Coding',
     apiModel: 'cohere/north-mini-code:free',
     costType: 'free',
     inputModalities: ['text'],
     capabilities: ['coding']
+  },
+  { 
+    id: 'nvidia-nemotron-3-super-free', 
+    name: 'Nemotron 3 Super 120B Free', 
+    provider: 'openrouter', 
+    type: 'chat', 
+    description: 'High-capacity conversational NVIDIA voice and instruction tuning powerhouse.',
+    category: 'General Chat',
+    apiModel: 'nvidia/nemotron-3-super-120b-a12b:free',
+    costType: 'free',
+    inputModalities: ['text'],
+    capabilities: ['general', 'reasoning']
+  },
+  { 
+    id: 'openrouter-free', 
+    name: 'OpenRouter Free Multimodal', 
+    provider: 'openrouter', 
+    type: 'vision', 
+    description: 'OpenRouter Free Model Auto-Route (Supports image/multimodal fallback)',
+    category: 'Image Analysis',
+    apiModel: 'openrouter/free',
+    costType: 'free',
+    inputModalities: ['text', 'image', 'video', 'audio'],
+    capabilities: ['general', 'image-to-text']
+  },
+  { 
+    id: 'nvidia-nemotron-nano-vl-free', 
+    name: 'Nemotron Nano 12B VL (Free Image Analysis)', 
+    provider: 'openrouter', 
+    type: 'vision', 
+    description: 'Advanced free multimodal model for deep image recognition, document scans, layout analysis, and chart breakdown.',
+    category: 'Image Analysis',
+    apiModel: 'nvidia/nemotron-nano-12b-v2-vl:free',
+    costType: 'free',
+    inputModalities: ['text', 'image'],
+    capabilities: ['image-to-text']
+  },
+  { 
+    id: 'nvidia-nemotron-omni-free', 
+    name: 'Nemotron 3 Nano Omni (Free Video/Audio Analysis)', 
+    provider: 'openrouter', 
+    type: 'vision', 
+    description: 'Next-generation free multimodal intelligence for video frame sequencing, audio transcription, visual reasoning, and media understanding.',
+    category: 'Video Analysis',
+    apiModel: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+    costType: 'free',
+    inputModalities: ['text', 'image', 'audio', 'video'],
+    capabilities: ['image-to-text', 'general']
   }
 ];
 
@@ -178,7 +226,11 @@ export function useAI() {
         if (settings?.style === 'creative') temperature = 1.15;
 
         // Perform fetch directly to OpenRouter client-side
-        const actualApiModel = modelDef?.apiModel || 'nvidia/nemotron-3-super-120b-a12b:free';
+        const hasImageAttachment = trimmedMessages.some(m => m.attachments?.some(a => a.type === 'image' || a.mimeType?.startsWith('image/')));
+        let actualApiModel = modelDef?.apiModel || 'openrouter/free';
+        if (hasImageAttachment) {
+          actualApiModel = 'openrouter/free';
+        }
         const apiMessages = [
           { role: 'system', content: systemPrompt },
           ...trimmedMessages.map(m => {

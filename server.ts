@@ -55,9 +55,9 @@ async function startServer() {
       if (activeProvider === 'gemini') {
         activeProvider = 'openrouter';
       }
-      let modelId = model || 'nvidia/nemotron-3-super-120b-a12b:free';
+      let modelId = model || 'nexus-auto';
       if (modelId === 'openrouter/free' || modelId === 'openrouter-free' || modelId.startsWith('gemini')) {
-        modelId = 'nvidia/nemotron-3-super-120b-a12b:free';
+        modelId = 'nexus-auto';
       }
 
       // 1. Detect Creative Synthesis / Image Generation Intent in the User Prompt
@@ -70,8 +70,22 @@ async function startServer() {
       // 1. NEXUS AUTO Dynamic Routing Logic with Llama intelligence analyzer:
       let analyzedPurpose = 'General Chat';
       if (modelId === 'nexus-auto') {
-        try {
-          const client = getOpenAICompatibleClient('openrouter', userKeys?.openrouter);
+        const hasImage = messages.some((m: any) => m.attachments?.some((a: any) => a.type === 'image' || a.mimeType?.startsWith('image/')));
+        const hasVideo = messages.some((m: any) => m.attachments?.some((a: any) => a.type === 'video' || a.mimeType?.startsWith('video/')));
+        const hasAudio = messages.some((m: any) => m.attachments?.some((a: any) => a.type === 'audio' || a.mimeType?.startsWith('audio/')));
+
+        if (hasVideo) {
+          analyzedPurpose = 'Video Analysis';
+          console.log(`[Nexus Routing] Detected video attachment. Routing to Video Analysis.`);
+        } else if (hasAudio) {
+          analyzedPurpose = 'Audio Analysis';
+          console.log(`[Nexus Routing] Detected audio attachment. Routing to Audio Analysis.`);
+        } else if (hasImage) {
+          analyzedPurpose = 'Image Analysis';
+          console.log(`[Nexus Routing] Detected image attachment. Routing to Image Analysis.`);
+        } else {
+          try {
+            const client = getOpenAICompatibleClient('openrouter', userKeys?.openrouter);
           console.log(`[Nexus Routing] Analysing prompt intent using openrouter meta-llama/llama-3.3-70b-instruct:free`);
           
           const analysisRes = await client.chat.completions.create({
@@ -113,44 +127,29 @@ async function startServer() {
             analyzedPurpose = 'Coding';
           }
         }
+        }
 
         // Map purpose to model ID using client-supplied purposeMapping
         const defaultMapping: Record<string, string> = {
-          'Coding': 'qwen/qwen3-coder:free',
-          'Reasoning / Math': 'deepseek/deepseek-r1:free',
-          'General Chat': 'nvidia/nemotron-3-super-120b-a12b:free',
-          'File Analysis': 'qwen/qwen3-next-80b-a3b-thinking:free',
-          'Image Analysis': 'qwen/qwen2.5-vl-72b-instruct:free',
-          'Video Analysis': 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
-          'Agents / Workflows': 'deepseek/deepseek-v3:free'
+          'Coding': 'cohere-north-mini-code-free',
+          'Reasoning / Math': 'nvidia-nemotron-3-super-free',
+          'General Chat': 'nvidia-nemotron-3-super-free',
+          'File Analysis': 'cohere-north-mini-code-free',
+          'Image Analysis': 'openrouter-free',
+          'Video Analysis': 'openrouter-free',
+          'Audio Analysis': 'openrouter-free',
+          'Agents / Workflows': 'nvidia-nemotron-3-super-free'
         };
 
-        const resolvedModelId = purposeMapping?.[analyzedPurpose] || defaultMapping[analyzedPurpose] || 'nvidia/nemotron-3-super-120b-a12b:free';
+        const resolvedModelId = purposeMapping?.[analyzedPurpose] || defaultMapping[analyzedPurpose] || 'nvidia-nemotron-3-super-free';
         console.log(`[Nexus Routing] Routing dynamic intent "${analyzedPurpose}" to model ID: "${resolvedModelId}"`);
 
         const idToApiModel: Record<string, { apiModel: string, provider: string }> = {
-          'qwen-3-coder-free-code': { apiModel: 'qwen/qwen3-coder:free', provider: 'openrouter' },
-          'deepseek-v3-free-code': { apiModel: 'deepseek/deepseek-v3:free', provider: 'openrouter' },
-          'nvidia-llama-3.3-70b': { apiModel: 'meta/llama-3.3-70b-instruct', provider: 'nvidia' },
-          'nvidia-nemotron-3-super-120b': { apiModel: 'nvidia/nemotron-3-super-120b-a12b', provider: 'nvidia' },
-          'deepseek-r1-free-reasoning': { apiModel: 'deepseek/deepseek-r1:free', provider: 'openrouter' },
-          'qwen3-next-thinking-free-reasoning': { apiModel: 'qwen/qwen3-next-80b-a3b-thinking:free', provider: 'openrouter' },
-          'claude-3-5-sonnet': { apiModel: 'anthropic/claude-3.5-sonnet', provider: 'openrouter' },
-          'qwen3-next-instruct-free-general': { apiModel: 'qwen/qwen3-next-80b-a3b-instruct:free', provider: 'openrouter' },
-          'gemma-3-27b-it-free-general': { apiModel: 'nvidia/nemotron-3-super-120b-a12b:free', provider: 'openrouter' },
-          'gemini-2.5-flash-free-general': { apiModel: 'nvidia/nemotron-3-super-120b-a12b:free', provider: 'openrouter' },
-          'nvidia-nemotron-3-super-free-general': { apiModel: 'nvidia/nemotron-3-super-120b-a12b:free', provider: 'openrouter' },
-          'llama-3.3-70b-instruct-free-general': { apiModel: 'meta-llama/llama-3.3-70b-instruct:free', provider: 'openrouter' },
-          'gpt-4o-paid-general': { apiModel: 'openai/gpt-4o', provider: 'openrouter' },
-          'qwen3-next-thinking-free-file': { apiModel: 'qwen/qwen3-next-80b-a3b-thinking:free', provider: 'openrouter' },
-          'nemotron-3-nano-free-file': { apiModel: 'nvidia/nemotron-3-nano-30b-a3b:free', provider: 'openrouter' },
-          'nemotron-nano-vl-free-image': { apiModel: 'nvidia/nemotron-nano-12b-v2-vl:free', provider: 'openrouter' },
-          'nemotron-3-nano-omni-free-image': { apiModel: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', provider: 'openrouter' },
-          'qwen-vl-free-image': { apiModel: 'qwen/qwen2.5-vl-72b-instruct:free', provider: 'openrouter' },
-          'nemotron-3-nano-omni-free-video': { apiModel: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', provider: 'openrouter' },
-          'nemotron-nano-vl-free-video': { apiModel: 'nvidia/nemotron-nano-12b-v2-vl:free', provider: 'openrouter' },
-          'qwen-3-coder-free-agent': { apiModel: 'qwen/qwen3-coder:free', provider: 'openrouter' },
-          'deepseek-v3-free-agent': { apiModel: 'deepseek/deepseek-v3:free', provider: 'openrouter' }
+          'cohere-north-mini-code-free': { apiModel: 'cohere/north-mini-code:free', provider: 'openrouter' },
+          'nvidia-nemotron-3-super-free': { apiModel: 'nvidia/nemotron-3-super-120b-a12b:free', provider: 'openrouter' },
+          'nvidia-nemotron-nano-vl-free': { apiModel: 'nvidia/nemotron-nano-12b-v2-vl:free', provider: 'openrouter' },
+          'nvidia-nemotron-omni-free': { apiModel: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', provider: 'openrouter' },
+          'openrouter-free': { apiModel: 'openrouter/free', provider: 'openrouter' }
         };
 
         const mapped = idToApiModel[resolvedModelId];
@@ -167,6 +166,25 @@ async function startServer() {
         }
         console.log(`[Nexus Routing] Translated model ID "${resolvedModelId}" to apiModel "${selectedModel}" on provider "${selectedProvider}"`);
       }
+
+      // Enforce image-capable model if image attachments are present
+      const hasImageAttachment = messages.some((m: any) =>
+        m.attachments?.some((a: any) => a.type === 'image' || a.mimeType?.startsWith('image/'))
+      );
+      if (hasImageAttachment) {
+        const visionSupportedModels = [
+          'openrouter/free',
+          'nvidia/nemotron-nano-12b-v2-vl:free',
+          'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+          'google/gemma-4-26b-a4b-it:free'
+        ];
+        if (!visionSupportedModels.includes(selectedModel)) {
+          console.log(`[Nexus Vision Enforcer] Model "${selectedModel}" does not support vision. Forcing "openrouter/free".`);
+          selectedModel = 'openrouter/free';
+          selectedProvider = 'openrouter';
+        }
+      }
+
       const imageKeywords = ['generate an image', 'draw ', 'create a picture', 'imagine ', 'show me a photo', 'visualize '];
       const isImageRequest = imageKeywords.some(k => prompt.includes(k)) && prompt.length < 250;
 
@@ -288,10 +306,28 @@ async function startServer() {
               stream: true,
             });
           } catch (err: any) {
-            // If the model not found or invalid: fallback to google/gemma-2-9b-it:free
-            if (apiModel === 'google/gemma-4-31b-it:free' && (err.status === 400 || err.status === 404 || err.message?.includes('model') || err.message?.includes('not found'))) {
-              console.warn("google/gemma-4-31b-it:free failed or not available, falling back to google/gemma-2-9b-it:free");
-              apiModel = 'google/gemma-2-9b-it:free';
+            const errString = `${err?.status || ''} ${err?.message || ''}`.toLowerCase();
+            const isImageOrNotFoundError = errString.includes('image input') ||
+                                           errString.includes('not found') ||
+                                           errString.includes('404') ||
+                                           err.status === 404 ||
+                                           err.status === 400;
+
+            if (isImageOrNotFoundError && apiModel !== 'openrouter/free') {
+              console.warn(`[Nexus Fallback] Model "${apiModel}" failed (${err?.message}). Retrying with "openrouter/free"...`);
+              apiModel = 'openrouter/free';
+              stream = await client.chat.completions.create({
+                model: apiModel,
+                messages: [
+                  { role: 'system', content: systemPrompt },
+                  ...mappedMessages
+                ],
+                temperature: temperature,
+                stream: true,
+              });
+            } else if (apiModel === 'google/gemma-4-31b-it:free') {
+              console.warn("google/gemma-4-31b-it:free failed, falling back to openrouter/free");
+              apiModel = 'openrouter/free';
               stream = await client.chat.completions.create({
                 model: apiModel,
                 messages: [

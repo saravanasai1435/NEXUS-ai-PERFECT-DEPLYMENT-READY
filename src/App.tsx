@@ -65,18 +65,6 @@ import 'highlight.js/styles/github.css';
 
 const cn = (...classes: any[]) => classes.filter(Boolean).join(' ');
 
-export interface CustomModelConfig {
-  id: string;
-  name: string;
-  provider: 'nvidia' | 'openrouter' | 'openai' | 'groq' | 'together' | 'deepseek' | 'anthropic' | 'custom';
-  apiKey: string;
-  baseUrl: string;
-  modelId: string;
-  assignedTypes: string[];
-  description?: string;
-  createdAt: number;
-}
-
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -100,58 +88,21 @@ export default function App() {
       try { return JSON.parse(stored); } catch (e) {}
     }
     return {
-      'Coding': 'qwen-3-coder-free-code',
-      'Reasoning / Math': 'deepseek-r1-free-reasoning',
-      'General Chat': 'gemma-3-27b-it-free-general',
-      'File Analysis': 'qwen3-next-thinking-free-file',
-      'Image Analysis': 'qwen-vl-free-image',
-      'Video Analysis': 'nemotron-3-nano-omni-free-video',
-      'Agents / Workflows': 'deepseek-v3-free-agent'
+      'Coding': 'cohere-north-mini-code-free',
+      'Reasoning / Math': 'nvidia-nemotron-3-super-free',
+      'General Chat': 'nvidia-nemotron-3-super-free',
+      'File Analysis': 'cohere-north-mini-code-free',
+      'Image Analysis': 'openrouter-free',
+      'Video Analysis': 'openrouter-free',
+      'Audio Analysis': 'openrouter-free',
+      'Agents / Workflows': 'nvidia-nemotron-3-super-free'
     };
   });
 
   const [customOpenRouterKey, setCustomOpenRouterKey] = useState(() => localStorage.getItem('nexus_custom_openrouter_key') || '');
   const [customNvidiaKey, setCustomNvidiaKey] = useState(() => localStorage.getItem('nexus_custom_nvidia_key') || '');
 
-  // Custom Models management state
-  const [customModels, setCustomModels] = useState<CustomModelConfig[]>(() => {
-    try {
-      const stored = localStorage.getItem('nexus_custom_models');
-      if (stored) return JSON.parse(stored);
-    } catch (e) {
-      console.warn("Failed loading custom models", e);
-    }
-    return [
-      {
-        id: 'custom-nv-nemotron-super',
-        name: 'NVIDIA Nemotron Super 120B',
-        provider: 'nvidia',
-        apiKey: '',
-        baseUrl: 'https://integrate.api.nvidia.com/v1',
-        modelId: 'nvidia/nemotron-3-super-120b-a12b',
-        assignedTypes: ['General Chat', 'Coding'],
-        description: 'NVIDIA GPU Accelerated LLM via NIM API',
-        createdAt: Date.now()
-      }
-    ];
-  });
-
-  // OpenRouter Dynamic Models Generator State
-  const [openRouterFetchedModels, setOpenRouterFetchedModels] = useState<{ id: string; name: string; context_length?: number }[]>([]);
-  const [fetchingOpenRouterModels, setFetchingOpenRouterModels] = useState(false);
-  const [openRouterFetchMsg, setOpenRouterFetchMsg] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
-  const [openRouterFilterQuery, setOpenRouterFilterQuery] = useState('');
-
-  // New Custom Model Form State
-  const [newModelProvider, setNewModelProvider] = useState<'nvidia' | 'openrouter' | 'openai' | 'groq' | 'together' | 'deepseek' | 'anthropic' | 'custom'>('nvidia');
-  const [newModelApiKey, setNewModelApiKey] = useState('');
-  const [newModelBaseUrl, setNewModelBaseUrl] = useState('https://integrate.api.nvidia.com/v1');
-  const [newModelId, setNewModelId] = useState('');
-  const [newModelName, setNewModelName] = useState('');
-  const [newModelAssignedTypes, setNewModelAssignedTypes] = useState<string[]>(['General Chat']);
-  const [testConnectionStatus, setTestConnectionStatus] = useState<Record<string, { testing: boolean; result?: string; error?: boolean }>>({});
-
-  // Synchronize router settings & custom models to cache
+  // Synchronize router settings to cache
   useEffect(() => {
     localStorage.setItem('nexus_custom_purpose_mapping', JSON.stringify(purposeMapping));
   }, [purposeMapping]);
@@ -163,170 +114,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('nexus_custom_nvidia_key', customNvidiaKey);
   }, [customNvidiaKey]);
-
-  useEffect(() => {
-    localStorage.setItem('nexus_custom_models', JSON.stringify(customModels));
-  }, [customModels]);
-
-  // Combine built-in MODELS with custom user models
-  const allAvailableModels = [
-    ...customModels.map(cm => ({
-      id: cm.id,
-      name: `${cm.name} [${cm.provider.toUpperCase()}]`,
-      provider: cm.provider,
-      type: 'chat' as const,
-      description: cm.description || `Custom model via ${cm.provider}`,
-      category: 'Custom',
-      apiModel: cm.modelId,
-      costType: 'custom' as const
-    })),
-    ...MODELS
-  ];
-
-  // Dynamic OpenRouter Models Fetch Handler
-  const handleFetchOpenRouterModels = async (overrideKey?: string) => {
-    const keyToUse = overrideKey || customOpenRouterKey || newModelApiKey;
-    if (!keyToUse || !keyToUse.trim()) {
-      setOpenRouterFetchMsg({
-        text: 'No OpenRouter API Key detected. Please paste your OpenRouter key (sk-or-v1-...) below or in "API Keys & Routing" to generate the available models list!',
-        type: 'error'
-      });
-      return;
-    }
-
-    setFetchingOpenRouterModels(true);
-    setOpenRouterFetchMsg({ text: 'Connecting to OpenRouter API to fetch available models...', type: 'info' });
-
-    try {
-      const res = await fetch('https://openrouter.ai/api/v1/models', {
-        headers: {
-          'Authorization': `Bearer ${keyToUse.trim()}`,
-          'HTTP-Referer': 'https://nexus-ai.studio',
-          'X-Title': 'Nexus AI Studio'
-        }
-      });
-
-      if (!res.ok) {
-        throw new Error(`OpenRouter returned HTTP status ${res.status}`);
-      }
-
-      const data = await res.json();
-      if (data && Array.isArray(data.data)) {
-        const formatted = data.data.map((m: any) => ({
-          id: m.id,
-          name: m.name || m.id,
-          context_length: m.context_length
-        }));
-        setOpenRouterFetchedModels(formatted);
-        setOpenRouterFetchMsg({
-          text: `Successfully generated ${formatted.length} models from your OpenRouter key!`,
-          type: 'success'
-        });
-      } else {
-        throw new Error('Invalid payload from OpenRouter models endpoint');
-      }
-    } catch (err: any) {
-      console.warn("OpenRouter live models fetch notice, presenting standard catalog", err);
-      const fallbackList = [
-        { id: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Llama 3.3 70B Instruct (Free)' },
-        { id: 'nvidia/nemotron-3-super-120b-a12b:free', name: 'NVIDIA Nemotron 3 Super 120B (Free)' },
-        { id: 'deepseek/deepseek-r1:free', name: 'DeepSeek R1 Reasoning (Free)' },
-        { id: 'deepseek/deepseek-v3:free', name: 'DeepSeek V3 (Free)' },
-        { id: 'qwen/qwen3-coder:free', name: 'Qwen 3 Coder 32B (Free)' },
-        { id: 'qwen/qwen2.5-vl-72b-instruct:free', name: 'Qwen 2.5 Vision 72B (Free)' },
-        { id: 'openai/gpt-4o', name: 'OpenAI GPT-4o' },
-        { id: 'openai/gpt-4o-mini', name: 'OpenAI GPT-4o Mini' },
-        { id: 'anthropic/claude-3.5-sonnet', name: 'Anthropic Claude 3.5 Sonnet' },
-        { id: 'google/gemini-2.5-pro-preview', name: 'Google Gemini 2.5 Pro' },
-        { id: 'groq/llama-3.3-70b-versatile', name: 'Groq Llama 3.3 70B' }
-      ];
-      setOpenRouterFetchedModels(fallbackList);
-      setOpenRouterFetchMsg({
-        text: `Loaded ${fallbackList.length} popular models catalog (${err.message || 'ready for selection'}).`,
-        type: 'info'
-      });
-    } finally {
-      setFetchingOpenRouterModels(false);
-    }
-  };
-
-  // Test Custom Model Endpoint Connection
-  const testCustomModelConnection = async (modelConfig: CustomModelConfig) => {
-    setTestConnectionStatus(prev => ({ ...prev, [modelConfig.id]: { testing: true } }));
-    try {
-      const endpoint = `${modelConfig.baseUrl.replace(/\/$/, '')}/chat/completions`;
-      const keyToUse = modelConfig.apiKey || (modelConfig.provider === 'nvidia' ? customNvidiaKey : customOpenRouterKey);
-
-      if (!keyToUse) {
-        throw new Error("No API key provided for this model endpoint.");
-      }
-
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${keyToUse}`,
-          'HTTP-Referer': 'https://nexus-ai.studio'
-        },
-        body: JSON.stringify({
-          model: modelConfig.modelId,
-          messages: [{ role: 'user', content: 'Ping' }],
-          max_tokens: 5
-        })
-      });
-
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson?.error?.message || errJson?.error || `HTTP ${res.status}`);
-      }
-
-      setTestConnectionStatus(prev => ({
-        ...prev,
-        [modelConfig.id]: { testing: false, result: 'Connected successfully! Endpoint & Key active.', error: false }
-      }));
-    } catch (err: any) {
-      setTestConnectionStatus(prev => ({
-        ...prev,
-        [modelConfig.id]: { testing: false, result: `Connection failed: ${err.message}`, error: true }
-      }));
-    }
-  };
-
-  // Save Custom Model Handler
-  const handleSaveCustomModel = () => {
-    if (!newModelId.trim()) {
-      alert("Please select or type a Model ID.");
-      return;
-    }
-    const finalName = newModelName.trim() || `${newModelProvider.toUpperCase()} - ${newModelId.split('/').pop() || newModelId}`;
-
-    const newEntry: CustomModelConfig = {
-      id: `custom-model-${Date.now()}`,
-      name: finalName,
-      provider: newModelProvider,
-      apiKey: newModelApiKey.trim(),
-      baseUrl: newModelBaseUrl.trim() || 'https://integrate.api.nvidia.com/v1',
-      modelId: newModelId.trim(),
-      assignedTypes: newModelAssignedTypes,
-      description: `Custom ${newModelProvider.toUpperCase()} model integration`,
-      createdAt: Date.now()
-    };
-
-    setCustomModels(prev => [newEntry, ...prev]);
-
-    // Update purposeMapping for assigned prompt categories
-    setPurposeMapping(prev => {
-      const updated = { ...prev };
-      newModelAssignedTypes.forEach(t => {
-        updated[t] = newEntry.id;
-      });
-      return updated;
-    });
-
-    setNewModelId('');
-    setNewModelName('');
-    alert(`Custom model "${finalName}" registered and mapped successfully!`);
-  };
 
   const [nexusSettings, setNexusSettings] = useState<NexusSettings>({
     personality: 'assistant',
@@ -371,13 +158,14 @@ export default function App() {
     const files = e.target.files;
     if (!files) return;
 
+    let hasMedia = false;
     Array.from(files).forEach(file => {
       const reader = new FileReader();
       reader.onload = (ev) => {
         let type: 'image' | 'video' | 'audio' | 'file' = 'file';
-        if (file.type.startsWith('image/')) type = 'image';
-        else if (file.type.startsWith('video/')) type = 'video';
-        else if (file.type.startsWith('audio/')) type = 'audio';
+        if (file.type.startsWith('image/')) { type = 'image'; hasMedia = true; }
+        else if (file.type.startsWith('video/')) { type = 'video'; hasMedia = true; }
+        else if (file.type.startsWith('audio/')) { type = 'audio'; hasMedia = true; }
         
         setAttachments(prev => [...prev, {
           type,
@@ -388,6 +176,13 @@ export default function App() {
       };
       reader.readAsDataURL(file);
     });
+    
+    // Automatically switch to NEXUS AUTO to ensure appropriate multimodal capabilities
+    if (Array.from(files).some(f => f.type.startsWith('image/') || f.type.startsWith('video/') || f.type.startsWith('audio/'))) {
+      if (selectedModelId !== 'nexus-auto') {
+        setSelectedModelId('nexus-auto');
+      }
+    }
   };
 
   const handleSendMessage = async () => {
@@ -420,7 +215,7 @@ export default function App() {
         }
         return newHistory;
       });
-    }, selectedModelId === 'nvidia-nemotron-3-super-free' ? undefined : selectedModelId);
+    }, selectedModelId === 'nexus-auto' ? undefined : selectedModelId);
 
     if (resp && user) {
       const finalHistory = [...updatedHistory, { role: 'assistant', content: resp.content, model: resp.model }];
@@ -635,7 +430,7 @@ export default function App() {
               {/* Model Selector Dropdown */}
               <div className="relative group">
                 <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-all border border-transparent hover:border-slate-200">
-                   <Zap className={cn("w-3.5 h-3.5", selectedModelId === 'nvidia-nemotron-3-super-free' ? "text-indigo-500 fill-indigo-500" : "text-slate-400")} />
+                   <Zap className={cn("w-3.5 h-3.5", selectedModelId === 'nexus-auto' ? "text-indigo-500 fill-indigo-500" : "text-slate-400")} />
                    <span className="text-xs font-bold text-slate-700">{selectedModel?.name}</span>
                    <ChevronRight className="w-3 h-3 text-slate-400 rotate-90" />
                 </button>
@@ -910,8 +705,6 @@ export default function App() {
                       <div className="space-y-1">
                          <p className="px-3 py-2 text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">System Center</p>
                          <SettingsTab active={activeSettingsTab === 'routing'} onClick={() => setActiveSettingsTab('routing')} icon={<Key className="w-4 h-4"/>} label="API Keys & Routing" />
-                         <SettingsTab active={activeSettingsTab === 'custom_models'} onClick={() => setActiveSettingsTab('custom_models')} icon={<Cpu className="w-4 h-4"/>} label="Custom Models" />
-                         
                       </div>
 
                        <div className="space-y-1">
@@ -1110,7 +903,7 @@ export default function App() {
                                  
                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 p-8 rounded-[36px] border border-slate-100">
                                     {Object.keys(purposeMapping).map((purpose) => {
-                                       const filteredModels = allAvailableModels;
+                                       const filteredModels = MODELS;
                                        return (
                                           <div key={purpose} className="space-y-2">
                                              <label className="text-[10px] font-black text-slate-600 uppercase tracking-widest flex items-center gap-2">
@@ -1138,412 +931,6 @@ export default function App() {
                               </div>
                             </div>
                           )}
-
-                         {activeSettingsTab === 'custom_models' && (
-                           <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-300 p-2 text-slate-800 pb-12">
-                              {/* Header Banner */}
-                              <div className="p-8 bg-slate-900 bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-950 text-white rounded-[32px] overflow-hidden relative shadow-xl border border-slate-800">
-                                 <div className="absolute top-0 right-0 p-8 opacity-10">
-                                    <Cpu className="w-48 h-48" />
-                                 </div>
-                                 <div className="relative z-10 text-left space-y-2">
-                                    <div className="px-3 py-1 bg-indigo-500/30 text-indigo-200 border border-indigo-500/30 rounded-full text-[9px] font-black uppercase tracking-widest inline-flex items-center gap-2">
-                                       <Sparkles className="w-3 h-3 text-indigo-400" /> Custom Neural Hub
-                                    </div>
-                                    <h4 className="text-2xl font-black italic tracking-tight">Custom Models & Provider API Hub</h4>
-                                    <p className="text-indigo-200 text-xs font-semibold max-w-2xl leading-relaxed">
-                                       Connect custom OpenAI-compatible API providers (NVIDIA NIM <code className="bg-indigo-900/60 px-1 py-0.5 rounded font-mono">nvapi-...</code>, OpenRouter, Groq, DeepSeek, Together, Anthropic, or custom endpoints). Generate & fetch live model IDs from your OpenRouter key or enter custom model IDs, and assign models to specific prompt types!
-                                    </p>
-                                 </div>
-                              </div>
-
-                              {/* Section 1: OpenRouter Dynamic Model Generator */}
-                              <div className="p-8 bg-slate-50 border border-slate-200 rounded-[32px] space-y-6 text-left">
-                                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200/80 pb-4">
-                                    <div>
-                                       <div className="flex items-center gap-2">
-                                          <RefreshCw className="w-4 h-4 text-indigo-600" />
-                                          <h5 className="text-sm font-black uppercase tracking-wider text-slate-900">OpenRouter Model Explorer & Generator</h5>
-                                       </div>
-                                       <p className="text-xs text-slate-500 font-medium mt-1">
-                                          Generate and select models directly from your pasted OpenRouter API Key (<code className="font-mono text-[11px]">sk-or-v1-...</code>).
-                                       </p>
-                                    </div>
-                                    <button 
-                                       onClick={() => handleFetchOpenRouterModels()} 
-                                       disabled={fetchingOpenRouterModels}
-                                       className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center gap-2 shrink-0 active:scale-95 disabled:opacity-50"
-                                    >
-                                       <RefreshCw className={`w-3.5 h-3.5 ${fetchingOpenRouterModels ? 'animate-spin' : ''}`} />
-                                       {fetchingOpenRouterModels ? 'Generating Models...' : 'Fetch OpenRouter Models'}
-                                    </button>
-                                 </div>
-
-                                 {/* OpenRouter Key status / Quick paste input */}
-                                 <div className="space-y-3">
-                                    <div className="flex items-center justify-between text-xs font-bold text-slate-700">
-                                       <span>OpenRouter API Key Status:</span>
-                                       {customOpenRouterKey ? (
-                                          <span className="text-emerald-600 bg-emerald-100 px-2.5 py-0.5 rounded-full font-mono text-[10px] font-black">
-                                             Key Connected ({customOpenRouterKey.slice(0, 10)}...)
-                                          </span>
-                                       ) : (
-                                          <span className="text-amber-600 bg-amber-100 px-2.5 py-0.5 rounded-full text-[10px] font-black">
-                                             No Key Configured
-                                          </span>
-                                       )}
-                                    </div>
-
-                                    {!customOpenRouterKey && (
-                                       <div className="flex gap-2">
-                                          <input 
-                                             type="password"
-                                             placeholder="Paste OpenRouter Key (sk-or-v1-...)"
-                                             value={newModelApiKey}
-                                             onChange={(e) => setNewModelApiKey(e.target.value)}
-                                             className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
-                                          />
-                                          <button 
-                                             onClick={() => {
-                                                if (newModelApiKey.trim()) {
-                                                   setCustomOpenRouterKey(newModelApiKey.trim());
-                                                   handleFetchOpenRouterModels(newModelApiKey.trim());
-                                                } else {
-                                                   alert("Please paste your OpenRouter key first.");
-                                                }
-                                             }}
-                                             className="px-4 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-all shrink-0"
-                                          >
-                                             Save & Generate
-                                          </button>
-                                       </div>
-                                    )}
-
-                                    {openRouterFetchMsg && (
-                                       <div className={`p-3 rounded-xl text-xs font-bold ${
-                                          openRouterFetchMsg.type === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' :
-                                          openRouterFetchMsg.type === 'error' ? 'bg-rose-50 text-rose-800 border border-rose-200' :
-                                          'bg-blue-50 text-blue-800 border border-blue-200'
-                                       }`}>
-                                          {openRouterFetchMsg.text}
-                                       </div>
-                                    )}
-
-                                    {/* Filtered models list dropdown preview */}
-                                    {openRouterFetchedModels.length > 0 && (
-                                       <div className="space-y-2 pt-2">
-                                          <div className="flex items-center justify-between">
-                                             <span className="text-[10px] font-black uppercase text-slate-400">Available Generated Models ({openRouterFetchedModels.length})</span>
-                                             <input 
-                                                type="text"
-                                                placeholder="Search models..."
-                                                value={openRouterFilterQuery}
-                                                onChange={(e) => setOpenRouterFilterQuery(e.target.value)}
-                                                className="bg-white border border-slate-200 rounded-lg px-3 py-1 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-48"
-                                             />
-                                          </div>
-                                          <div className="max-h-48 overflow-y-auto bg-white border border-slate-200 rounded-xl p-2 space-y-1 custom-scrollbar">
-                                             {openRouterFetchedModels
-                                                .filter(m => !openRouterFilterQuery || m.id.toLowerCase().includes(openRouterFilterQuery.toLowerCase()) || m.name.toLowerCase().includes(openRouterFilterQuery.toLowerCase()))
-                                                .slice(0, 40)
-                                                .map(m => (
-                                                   <div 
-                                                      key={m.id}
-                                                      onClick={() => {
-                                                         setNewModelProvider('openrouter');
-                                                         setNewModelId(m.id);
-                                                         setNewModelName(m.name);
-                                                      }}
-                                                      className="p-2 hover:bg-indigo-50 rounded-lg cursor-pointer flex items-center justify-between text-xs transition-colors group"
-                                                   >
-                                                      <div>
-                                                         <p className="font-bold text-slate-800 group-hover:text-indigo-600">{m.name}</p>
-                                                         <p className="text-[10px] font-mono text-slate-400">{m.id}</p>
-                                                      </div>
-                                                      <span className="text-[9px] font-bold text-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity">Select Model &rarr;</span>
-                                                   </div>
-                                                ))}
-                                          </div>
-                                       </div>
-                                    )}
-                                 </div>
-                              </div>
-
-                              {/* Section 2: Register New Custom Model Form */}
-                              <div className="p-8 bg-white border border-slate-200 rounded-[32px] space-y-6 text-left shadow-sm">
-                                 <h5 className="text-sm font-black uppercase tracking-wider text-slate-900 flex items-center gap-2">
-                                    <Plus className="w-4 h-4 text-indigo-600" /> Register Custom Provider Model
-                                 </h5>
-
-                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                    {/* Provider Selector */}
-                                    <div className="space-y-2">
-                                       <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">1. Select API Provider</label>
-                                       <select 
-                                          value={newModelProvider}
-                                          onChange={(e) => {
-                                             const p = e.target.value as any;
-                                             setNewModelProvider(p);
-                                             if (p === 'nvidia') {
-                                                setNewModelBaseUrl('https://integrate.api.nvidia.com/v1');
-                                                if (customNvidiaKey) setNewModelApiKey(customNvidiaKey);
-                                             } else if (p === 'openrouter') {
-                                                setNewModelBaseUrl('https://openrouter.ai/api/v1');
-                                                if (customOpenRouterKey) setNewModelApiKey(customOpenRouterKey);
-                                             } else if (p === 'openai') {
-                                                setNewModelBaseUrl('https://api.openai.com/v1');
-                                             } else if (p === 'groq') {
-                                                setNewModelBaseUrl('https://api.groq.com/openai/v1');
-                                             } else if (p === 'deepseek') {
-                                                setNewModelBaseUrl('https://api.deepseek.com/v1');
-                                             } else if (p === 'together') {
-                                                setNewModelBaseUrl('https://api.together.xyz/v1');
-                                             } else if (p === 'anthropic') {
-                                                setNewModelBaseUrl('https://api.anthropic.com/v1');
-                                             }
-                                          }}
-                                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
-                                       >
-                                          <option value="nvidia">NVIDIA NIM (nvapi-...)</option>
-                                          <option value="openrouter">OpenRouter (sk-or-v1-...)</option>
-                                          <option value="openai">OpenAI (sk-...)</option>
-                                          <option value="groq">Groq Acceleration (gsk_...)</option>
-                                          <option value="deepseek">DeepSeek AI (sk-...)</option>
-                                          <option value="together">Together AI</option>
-                                          <option value="anthropic">Anthropic Claude</option>
-                                          <option value="custom">Custom Base Endpoint</option>
-                                       </select>
-                                    </div>
-
-                                    {/* API Key */}
-                                    <div className="space-y-2">
-                                       <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">2. API Key (`nvapi-...` / `sk-...` / `gsk_...`)</label>
-                                       <input 
-                                          type="password"
-                                          placeholder={newModelProvider === 'nvidia' ? 'nvapi-...' : 'sk-or-v1-...'}
-                                          value={newModelApiKey}
-                                          onChange={(e) => setNewModelApiKey(e.target.value)}
-                                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
-                                       />
-                                    </div>
-
-                                    {/* Base URL */}
-                                    <div className="space-y-2">
-                                       <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">3. Provider Base Endpoint URL</label>
-                                       <input 
-                                          type="text"
-                                          placeholder="https://integrate.api.nvidia.com/v1"
-                                          value={newModelBaseUrl}
-                                          onChange={(e) => setNewModelBaseUrl(e.target.value)}
-                                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
-                                       />
-                                    </div>
-
-                                    {/* Model ID Input or Selector */}
-                                    <div className="space-y-2">
-                                       <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">4. Model ID / String</label>
-                                       <input 
-                                          type="text"
-                                          placeholder={
-                                             newModelProvider === 'nvidia' ? 'nvidia/nemotron-4-340b-instruct' :
-                                             newModelProvider === 'groq' ? 'llama-3.3-70b-versatile' :
-                                             newModelProvider === 'deepseek' ? 'deepseek-chat' :
-                                             'meta-llama/llama-3.3-70b-instruct:free'
-                                          }
-                                          value={newModelId}
-                                          onChange={(e) => setNewModelId(e.target.value)}
-                                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
-                                       />
-                                    </div>
-
-                                    {/* Friendly Display Name */}
-                                    <div className="space-y-2 md:col-span-2">
-                                       <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">5. Model Friendly Name</label>
-                                       <input 
-                                          type="text"
-                                          placeholder="e.g. NVIDIA Nemotron Super 120B, Groq Fast Llama, DeepSeek Coder"
-                                          value={newModelName}
-                                          onChange={(e) => setNewModelName(e.target.value)}
-                                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
-                                       />
-                                    </div>
-
-                                    {/* Assign Question / Task Types */}
-                                    <div className="space-y-3 md:col-span-2">
-                                       <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">6. Assign Question / Prompt Types for Auto-Routing</label>
-                                       <div className="flex flex-wrap gap-2">
-                                          {[
-                                             'General Chat',
-                                             'Coding',
-                                             'Reasoning / Math',
-                                             'File Analysis',
-                                             'Image Analysis',
-                                             'Video Analysis',
-                                             'Agents / Workflows',
-                                             'Creative Writing'
-                                          ].map(taskType => {
-                                             const isSelected = newModelAssignedTypes.includes(taskType);
-                                             return (
-                                                <button 
-                                                   key={taskType}
-                                                   type="button"
-                                                   onClick={() => {
-                                                      if (isSelected) {
-                                                         setNewModelAssignedTypes(prev => prev.filter(t => t !== taskType));
-                                                      } else {
-                                                         setNewModelAssignedTypes(prev => [...prev, taskType]);
-                                                      }
-                                                   }}
-                                                   className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
-                                                      isSelected 
-                                                         ? 'bg-indigo-600 text-white shadow-sm' 
-                                                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                                                   }`}
-                                                >
-                                                   {isSelected && <Check className="w-3 h-3" />}
-                                                   {taskType}
-                                                </button>
-                                             );
-                                          })}
-                                       </div>
-                                    </div>
-                                 </div>
-
-                                 <button 
-                                    onClick={handleSaveCustomModel}
-                                    className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl text-xs font-black uppercase tracking-widest transition-all shadow-md flex items-center justify-center gap-2 active:scale-98"
-                                 >
-                                    <Plus className="w-4 h-4 text-indigo-400" /> Save & Register Custom Model
-                                 </button>
-                              </div>
-
-                              {/* Section 3: Registered Custom Models List */}
-                              <div className="space-y-4 text-left">
-                                 <h5 className="text-xs font-black uppercase tracking-widest text-slate-400">Registered Custom Models ({customModels.length})</h5>
-
-                                 <div className="grid grid-cols-1 gap-4">
-                                    {customModels.map(cm => {
-                                       const testState = testConnectionStatus[cm.id];
-                                       return (
-                                          <div key={cm.id} className="p-6 bg-slate-50 border border-slate-200 rounded-[28px] space-y-4">
-                                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200/60 pb-3">
-                                                <div className="flex items-center gap-3">
-                                                   <div className="w-10 h-10 rounded-2xl bg-indigo-100 text-indigo-600 flex items-center justify-center font-black text-sm uppercase shrink-0">
-                                                      {cm.provider.slice(0, 2)}
-                                                   </div>
-                                                   <div>
-                                                      <h6 className="text-sm font-black text-slate-900">{cm.name}</h6>
-                                                      <p className="text-[10px] font-mono text-slate-500">{cm.modelId}</p>
-                                                   </div>
-                                                </div>
-
-                                                <div className="flex items-center gap-2">
-                                                   <span className="px-3 py-1 bg-slate-900 text-white rounded-full text-[9px] font-black uppercase">
-                                                      {cm.provider}
-                                                   </span>
-                                                   <button 
-                                                      onClick={() => setCustomModels(prev => prev.filter(m => m.id !== cm.id))}
-                                                      className="p-2 text-rose-500 hover:bg-rose-100 rounded-xl transition-all"
-                                                      title="Delete model"
-                                                   >
-                                                      <Trash2 className="w-4 h-4" />
-                                                   </button>
-                                                </div>
-                                             </div>
-
-                                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-medium text-slate-600">
-                                                <div>
-                                                   <span className="text-[9px] font-black text-slate-400 uppercase block">Endpoint Base URL</span>
-                                                   <span className="font-mono text-[11px] text-slate-800 break-all">{cm.baseUrl}</span>
-                                                </div>
-                                                <div>
-                                                   <span className="text-[9px] font-black text-slate-400 uppercase block">API Key</span>
-                                                   <span className="font-mono text-[11px] text-slate-800">
-                                                      {cm.apiKey ? `${cm.apiKey.slice(0, 8)}...*****` : (cm.provider === 'nvidia' && customNvidiaKey ? `${customNvidiaKey.slice(0, 8)}...***** (Global Key)` : 'Default Session Key')}
-                                                   </span>
-                                                </div>
-                                             </div>
-
-                                             {/* Assigned Task Types Badges */}
-                                             <div>
-                                                <span className="text-[9px] font-black text-slate-400 uppercase block mb-1.5">Assigned Question / Task Types</span>
-                                                <div className="flex flex-wrap gap-1.5">
-                                                   {cm.assignedTypes.map(t => (
-                                                      <span key={t} className="px-2.5 py-1 bg-indigo-100 text-indigo-800 rounded-lg text-[10px] font-bold">
-                                                         {t}
-                                                      </span>
-                                                   ))}
-                                                </div>
-                                             </div>
-
-                                             {/* Test Connection Button */}
-                                             <div className="pt-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                                                <button 
-                                                   onClick={() => testCustomModelConnection(cm)}
-                                                   disabled={testState?.testing}
-                                                   className="px-4 py-2 bg-white border border-slate-200 hover:bg-slate-100 text-slate-800 rounded-xl text-xs font-bold transition-all shadow-sm flex items-center gap-2 shrink-0 disabled:opacity-50"
-                                                >
-                                                   <Activity className={`w-3.5 h-3.5 text-indigo-600 ${testState?.testing ? 'animate-spin' : ''}`} />
-                                                   {testState?.testing ? 'Testing Endpoint...' : 'Test Connection'}
-                                                </button>
-
-                                                {testState?.result && (
-                                                   <span className={`text-xs font-bold ${testState.error ? 'text-rose-600' : 'text-emerald-600'}`}>
-                                                      {testState.result}
-                                                   </span>
-                                                )}
-                                             </div>
-                                          </div>
-                                       );
-                                    })}
-                                 </div>
-                              </div>
-                           </div>
-                         )}
-
-                         {false && (
-                           <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-300">
-                              <div className="grid grid-cols-2 gap-6">
-                                 <div className="p-6 bg-slate-50 border border-slate-200 rounded-[32px] space-y-4">
-                                    <div className="flex items-center justify-between">
-                                       <Monitor className="w-5 h-5 text-slate-400" />
-                                       <span className="text-[9px] font-black text-indigo-600 uppercase">Active</span>
-                                    </div>
-                                    <h4 className="text-sm font-black">Light Interface</h4>
-                                    <p className="text-[10px] text-slate-400 font-medium">Clean, biological daylight aesthetics.</p>
-                                 </div>
-                                 <div className="p-6 bg-slate-900 border border-slate-800 rounded-[32px] space-y-4">
-                                    <h4 className="text-sm font-black text-white">Neural Dark</h4>
-                                    <p className="text-[10px] text-slate-500 font-medium">High contrast for deep focus sessions.</p>
-                                 </div>
-                              </div>
-                              <div className="space-y-6">
-                                 <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Accent Configuration</h5>
-                                 <div className="flex gap-4">
-                                    {['#4f46e5', '#10b981', '#f59e0b', '#3b82f6', '#ec4899'].map(c => (
-                                      <button key={c} style={{ backgroundColor: c }} className="w-10 h-10 rounded-full shadow-lg ring-2 ring-transparent hover:ring-slate-300 transition-all"/>
-                                    ))}
-                                 </div>
-                              </div>
-                              <ToggleGroup icon={<Sparkles />} label="Frost Glass Effects" description="Enable blur and glassmorphism across the interface." enabled={true} />
-                              <ToggleGroup icon={<Zap />} label="High Energy Animations" description="Dynamic transitions and micro-motion feedback." enabled={true} />
-                           </div>
-                         )}
-
-                         {false && (
-                           <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-300">
-                             <div className="grid grid-cols-3 gap-6">
-                                <StatCard label="Total Messages" value="1,284" sub="Last 30 days" />
-                                <StatCard label="Tokens Processed" value="482k" sub="Nexus Link v3" />
-                                <StatCard label="Avg Response" value="1.4s" sub="Sub-neural speed" />
-                             </div>
-                             <div className="p-10 bg-slate-50 rounded-[40px] border border-slate-200 h-64 flex items-end gap-2 px-8">
-                                {[40, 70, 45, 90, 65, 80, 100, 55, 75, 60, 85, 40].map((h, i) => (
-                                  <div key={i} style={{ height: `${h}%` }} className="flex-1 bg-indigo-500 rounded-t-lg opacity-40 hover:opacity-100 transition-all" />
-                                ))}
-                             </div>
-                           </div>
-                         )}
 
                          {activeSettingsTab === 'api_key_guide' && (
                            <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-300">
@@ -1577,7 +964,7 @@ export default function App() {
                                         <li>Sign up/log in at <a href="https://openrouter.ai" target="_blank" rel="noopener noreferrer" className="text-indigo-600 underline font-bold">openrouter.ai</a>.</li>
                                         <li>Go to <strong>Keys</strong> tab and click <strong>Create Key</strong>.</li>
                                         <li>Copy key starting with <code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-[11px] text-slate-800">sk-or-v1-...</code>.</li>
-                                        <li>Paste key into <strong>Custom Models</strong> configuration.</li>
+                                        <li>Paste key into <strong>API Keys & Routing</strong> configuration.</li>
                                      </ol>
                                   </div>
 
@@ -1625,7 +1012,7 @@ export default function App() {
                                         <li>Log in to <a href="https://console.groq.com" target="_blank" rel="noopener noreferrer" className="text-orange-600 underline font-bold">console.groq.com</a>.</li>
                                         <li>Navigate to <strong>API Keys</strong> sidebar item.</li>
                                         <li>Click <strong>Create API Key</strong> and copy key (<code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-[11px]">gsk_...</code>).</li>
-                                        <li>Paste key under <strong>Custom Models</strong> tab.</li>
+                                        <li>Paste key under <strong>API Keys & Routing</strong> tab.</li>
                                      </ol>
                                   </div>
 
@@ -1649,7 +1036,7 @@ export default function App() {
                                         <li>Sign in at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-slate-900 underline font-bold">platform.openai.com</a>.</li>
                                         <li>Click <strong>Create new secret key</strong>.</li>
                                         <li>Copy key starting with <code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-[11px]">sk-...</code>.</li>
-                                        <li>Use under <strong>Custom Models</strong> tab.</li>
+                                        <li>Use under <strong>API Keys & Routing</strong> tab.</li>
                                      </ol>
                                   </div>
 
@@ -1672,7 +1059,7 @@ export default function App() {
                                      <ol className="space-y-1.5 text-xs text-slate-600 font-medium list-decimal list-inside leading-relaxed pl-1">
                                         <li>Visit <a href="https://platform.deepseek.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 underline font-bold">platform.deepseek.com</a>.</li>
                                         <li>Go to <strong>API Keys</strong> section and generate a key.</li>
-                                        <li>Paste key into <strong>Custom Models</strong> with OpenAI-style endpoint.</li>
+                                        <li>Paste key into <strong>API Keys & Routing</strong> with OpenAI-style endpoint.</li>
                                      </ol>
                                   </div>
 
@@ -1695,7 +1082,7 @@ export default function App() {
                                      <ol className="space-y-1.5 text-xs text-slate-600 font-medium list-decimal list-inside leading-relaxed pl-1">
                                         <li>Visit <a href="https://console.anthropic.com" target="_blank" rel="noopener noreferrer" className="text-amber-700 underline font-bold">console.anthropic.com</a>.</li>
                                         <li>Navigate to <strong>API Keys</strong> and generate key (<code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-[11px]">sk-ant-...</code>).</li>
-                                        <li>Copy key and register under <strong>Custom Models</strong>.</li>
+                                        <li>Copy key and register under <strong>API Keys & Routing</strong>.</li>
                                      </ol>
                                   </div>
                                  </div>
